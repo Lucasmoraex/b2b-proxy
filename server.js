@@ -13,6 +13,9 @@ const ADMIN_SECRET = process.env.B2B_ADMIN_SECRET || ""; // secret para rotas /a
 /* ====================== */
 
 app.set("trust proxy", 1);
+// evita 304 de ETag para respostas (especialmente /validate-login)
+app.set("etag", false);
+
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 app.use(cors({ origin: ORIGIN, methods: ["GET", "POST", "OPTIONS"] }));
 app.use(express.json());
@@ -103,6 +106,15 @@ function guard(req, res) {
 /* ======== Public: validação de login ======== */
 // GET /validate-login?email=...&cnpj=...
 app.get("/validate-login", async (req, res) => {
+  // **nunca** deixar cachear este endpoint
+  res.set({
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Surrogate-Control": "no-store",
+    "Vary": "Origin"
+  });
+
   try {
     const email = String(req.query.email || "").trim().toLowerCase();
     const cnpj  = onlyDigits(String(req.query.cnpj || ""));
@@ -114,23 +126,32 @@ app.get("/validate-login", async (req, res) => {
     const customer = await findCustomerByEmail(email);
     if (!customer) return res.json({ ok: true, exists: false });
 
-    // 2) compara metafield custom.cnpj
+    // 2) compara metafield custom.cnpj e lê cnpj_status
     const metas = await api(`/customers/${customer.id}/metafields.json?namespace=custom`);
-    const mf = (metas.metafields || []).find(m => {
+    const mfCnpjField = (metas.metafields || []).find(m => {
       const key = String(m.key || "").toLowerCase();
       const ns  = String(m.namespace || "").toLowerCase();
-      return ns === "custom" && (key === "cnpj" || key === "cjnpj"); // aceita o antigo cjnpj também
+      return ns === "custom" && (key === "cnpj" || key === "cjnpj"); // aceita antigo cjnpj
     });
-    const mfCnpj = mf ? String(mf.value || "") : "";
+    const mfStatusField = (metas.metafields || []).find(m => {
+      const key = String(m.key || "").toLowerCase();
+      const ns  = String(m.namespace || "").toLowerCase();
+      return ns === "custom" && key === "cnpj_status";
+    });
+
+    const mfCnpj = mfCnpjField ? String(mfCnpjField.value || "") : "";
+    const cnpj_status = (mfStatusField ? String(mfStatusField.value || "") : "").toLowerCase();
     const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
-    // 3) tag de aprovação
-    const approved = (customer.tags || "")
+    // 3) aprovação = tag + status 'approved'
+    const hasApprovedTag = (customer.tags || "")
       .split(",")
       .map(t => t.trim())
       .includes("b2b-approved");
 
-    res.json({ ok: true, exists: true, cnpj_match, approved });
+    const approved = hasApprovedTag && cnpj_status === "approved";
+
+    res.json({ ok: true, exists: true, cnpj_match, approved, cnpj_status });
   } catch (e) {
     console.error("validate-login error:", e);
     res.status(500).json({ ok: false, exists: false });
@@ -162,7 +183,7 @@ app.post("/admin/approve", async (req, res) => {
   }
 });
 
-// GET helper para testar no navegador
+// GET helper para testar no navegador (mesma lógica do POST)
 app.get("/admin/approve", (req, res) => app._router.handle(
   { ...req, method: "POST" }, res
 ));
@@ -190,7 +211,7 @@ app.post("/admin/reject", async (req, res) => {
   }
 });
 
-// GET helper para testar no navegador
+// GET helper para testar no navegador (mesma lógica do POST)
 app.get("/admin/reject", (req, res) => app._router.handle(
   { ...req, method: "POST" }, res
 ));
