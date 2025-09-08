@@ -49,7 +49,6 @@ async function findCustomerByEmail(email) {
 }
 
 async function setCustomerTags(customerId, tagsArray) {
-  // Shopify REST espera string separada por vírgula
   const tags = [...new Set(tagsArray.map(t => t.trim()).filter(Boolean))].join(", ");
   await api(`/customers/${customerId}.json`, {
     method: "PUT",
@@ -104,9 +103,7 @@ function guard(req, res) {
 }
 
 /* ======== Public: validação de login ======== */
-// GET /validate-login?email=...&cnpj=...
 app.get("/validate-login", async (req, res) => {
-  // **nunca** deixar cachear este endpoint
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
@@ -122,33 +119,18 @@ app.get("/validate-login", async (req, res) => {
     if (!email || cnpj.length !== 14)
       return res.status(400).json({ ok: false, exists: false });
 
-    // 1) busca cliente por e-mail
     const customer = await findCustomerByEmail(email);
     if (!customer) return res.json({ ok: true, exists: false });
 
-    // 2) compara metafield custom.cnpj e lê cnpj_status
     const metas = await api(`/customers/${customer.id}/metafields.json?namespace=custom`);
-    const mfCnpjField = (metas.metafields || []).find(m => {
-      const key = String(m.key || "").toLowerCase();
-      const ns  = String(m.namespace || "").toLowerCase();
-      return ns === "custom" && (key === "cnpj" || key === "cjnpj"); // aceita antigo cjnpj
-    });
-    const mfStatusField = (metas.metafields || []).find(m => {
-      const key = String(m.key || "").toLowerCase();
-      const ns  = String(m.namespace || "").toLowerCase();
-      return ns === "custom" && key === "cnpj_status";
-    });
+    const mfCnpjField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj");
+    const mfStatusField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj_status");
 
     const mfCnpj = mfCnpjField ? String(mfCnpjField.value || "") : "";
     const cnpj_status = (mfStatusField ? String(mfStatusField.value || "") : "").toLowerCase();
     const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
-    // 3) aprovação = tag + status 'approved'
-    const hasApprovedTag = (customer.tags || "")
-      .split(",")
-      .map(t => t.trim())
-      .includes("b2b-approved");
-
+    const hasApprovedTag = (customer.tags || "").split(",").map(t => t.trim()).includes("b2b-approved");
     const approved = hasApprovedTag && cnpj_status === "approved";
 
     res.json({ ok: true, exists: true, cnpj_match, approved, cnpj_status });
@@ -158,8 +140,37 @@ app.get("/validate-login", async (req, res) => {
   }
 });
 
+/* ======== Public: registrar CNPJ ======== */
+app.post("/register-cnpj", async (req, res) => {
+  try {
+    const { email, cnpj } = req.body || {};
+    const mail = String(email || "").trim().toLowerCase();
+    const num  = onlyDigits(cnpj || "");
+
+    if (!mail || num.length !== 14) {
+      return res.status(400).json({ ok: false, error: "invalid_params" });
+    }
+
+    const customer = await findCustomerByEmail(mail);
+    if (!customer) return res.status(404).json({ ok: false, error: "customer_not_found" });
+
+    await upsertCustomerMetafield(customer.id, "cnpj", num);
+    await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
+
+    const tags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    if (!tags.includes("b2b-pending")) {
+      tags.push("b2b-pending");
+      await setCustomerTags(customer.id, tags);
+    }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("register-cnpj error:", e);
+    res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
 /* ======== Admin: aprovar / reprovar ======== */
-// POST /admin/approve?email=...
 app.post("/admin/approve", async (req, res) => {
   if (!guard(req, res)) return;
   try {
@@ -171,7 +182,7 @@ app.post("/admin/approve", async (req, res) => {
 
     const currentTags = (c.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
-    const tags = currentTags.filter(t => t !== "b2b-pending"); // remove pending se existir
+    const tags = currentTags.filter(t => t !== "b2b-pending");
 
     await setCustomerTags(c.id, tags);
     await upsertCustomerMetafield(c.id, "cnpj_status", "approved");
@@ -182,13 +193,8 @@ app.post("/admin/approve", async (req, res) => {
     res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
+app.get("/admin/approve", (req, res) => app._router.handle({ ...req, method: "POST" }, res));
 
-// GET helper para testar no navegador (mesma lógica do POST)
-app.get("/admin/approve", (req, res) => app._router.handle(
-  { ...req, method: "POST" }, res
-));
-
-// POST /admin/reject?email=...
 app.post("/admin/reject", async (req, res) => {
   if (!guard(req, res)) return;
   try {
@@ -199,7 +205,7 @@ app.post("/admin/reject", async (req, res) => {
     if (!c) return res.json({ ok: true, found: false });
 
     const currentTags = (c.tags || "").split(",").map(t => t.trim()).filter(Boolean);
-    const tags = currentTags.filter(t => t !== "b2b-approved"); // remove aprovação
+    const tags = currentTags.filter(t => t !== "b2b-approved");
 
     await setCustomerTags(c.id, tags);
     await upsertCustomerMetafield(c.id, "cnpj_status", "rejected");
@@ -210,11 +216,7 @@ app.post("/admin/reject", async (req, res) => {
     res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
-
-// GET helper para testar no navegador (mesma lógica do POST)
-app.get("/admin/reject", (req, res) => app._router.handle(
-  { ...req, method: "POST" }, res
-));
+app.get("/admin/reject", (req, res) => app._router.handle({ ...req, method: "POST" }, res));
 
 /* ======== Root ======== */
 app.get("/", (_, res) => res.send("ok"));
