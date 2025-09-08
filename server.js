@@ -13,8 +13,7 @@ const ADMIN_SECRET = process.env.B2B_ADMIN_SECRET || ""; // secret para rotas /a
 /* ====================== */
 
 app.set("trust proxy", 1);
-// evita 304 de ETag para respostas (especialmente /validate-login)
-app.set("etag", false);
+app.set("etag", false); // evita 304/ETag
 
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 app.use(cors({ origin: ORIGIN, methods: ["GET", "POST", "OPTIONS"] }));
@@ -27,9 +26,9 @@ const api = async (path, opts = {}) => {
     method: opts.method || "GET",
     headers: {
       "X-Shopify-Access-Token": TOKEN,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
-    body: opts.body ? JSON.stringify(opts.body) : undefined
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const text = await res.text();
   if (!res.ok) {
@@ -40,7 +39,7 @@ const api = async (path, opts = {}) => {
 };
 
 const onlyDigits = (s = "") => s.replace(/\D/g, "").slice(0, 14);
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ======== Helpers de cliente/metafield/tags ======== */
 async function findCustomerByEmail(email) {
@@ -49,11 +48,21 @@ async function findCustomerByEmail(email) {
   return (cs.customers || [])[0] || null;
 }
 
+// Aguarda o cliente “aparecer” após o cadastro na vitrine
+async function waitForCustomerByEmail(email, retries = 8, delayMs = 800) {
+  for (let i = 0; i < retries; i++) {
+    const c = await findCustomerByEmail(email);
+    if (c) return c;
+    await sleep(delayMs);
+  }
+  return null;
+}
+
 async function setCustomerTags(customerId, tagsArray) {
-  const tags = [...new Set(tagsArray.map(t => t.trim()).filter(Boolean))].join(", ");
+  const tags = [...new Set(tagsArray.map((t) => t.trim()).filter(Boolean))].join(", ");
   await api(`/customers/${customerId}.json`, {
     method: "PUT",
-    body: { customer: { id: customerId, tags } }
+    body: { customer: { id: customerId, tags } },
   });
 }
 
@@ -65,12 +74,12 @@ async function upsertCustomerMetafield(
   namespace = "custom"
 ) {
   const metas = await api(`/customers/${customerId}/metafields.json?namespace=${namespace}`);
-  const existing = (metas.metafields || []).find(m => m.key === key);
+  const existing = (metas.metafields || []).find((m) => String(m.key).toLowerCase() === String(key).toLowerCase());
 
   if (existing) {
     await api(`/metafields/${existing.id}.json`, {
       method: "PUT",
-      body: { metafield: { id: existing.id, value, type } }
+      body: { metafield: { id: existing.id, value, type } },
     });
   } else {
     await api(`/metafields.json`, {
@@ -82,9 +91,9 @@ async function upsertCustomerMetafield(
           owner_id: customerId,
           owner_resource: "customer",
           type,
-          value
-        }
-      }
+          value,
+        },
+      },
     });
   }
 }
@@ -105,18 +114,17 @@ function guard(req, res) {
 
 /* ======== Public: validação de login ======== */
 app.get("/validate-login", async (req, res) => {
-  // nunca deixar cachear
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
     "Expires": "0",
     "Surrogate-Control": "no-store",
-    "Vary": "Origin"
+    "Vary": "Origin",
   });
 
   try {
     const email = String(req.query.email || "").trim().toLowerCase();
-    const cnpj  = onlyDigits(String(req.query.cnpj || ""));
+    const cnpj = onlyDigits(String(req.query.cnpj || ""));
 
     if (!email || cnpj.length !== 14)
       return res.status(400).json({ ok: false, exists: false });
@@ -125,14 +133,21 @@ app.get("/validate-login", async (req, res) => {
     if (!customer) return res.json({ ok: true, exists: false });
 
     const metas = await api(`/customers/${customer.id}/metafields.json?namespace=custom`);
-    const mfCnpjField   = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj");
-    const mfStatusField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj_status");
+    const mfCnpjField = (metas.metafields || []).find(
+      (m) => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj"
+    );
+    const mfStatusField = (metas.metafields || []).find(
+      (m) => m.key?.toLowerCase() === "cnpj_status"
+    );
 
     const mfCnpj = mfCnpjField ? String(mfCnpjField.value || "") : "";
     const cnpj_status = (mfStatusField ? String(mfStatusField.value || "") : "").toLowerCase();
-    const cnpj_match  = onlyDigits(mfCnpj) === cnpj;
+    const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
-    const hasApprovedTag = (customer.tags || "").split(",").map(t => t.trim()).includes("b2b-approved");
+    const hasApprovedTag = (customer.tags || "")
+      .split(",")
+      .map((t) => t.trim())
+      .includes("b2b-approved");
     const approved = hasApprovedTag && cnpj_status === "approved";
 
     res.json({ ok: true, exists: true, cnpj_match, approved, cnpj_status });
@@ -144,38 +159,34 @@ app.get("/validate-login", async (req, res) => {
 
 /* ======== Public: registrar CNPJ ======== */
 app.post("/register-cnpj", async (req, res) => {
-  // nunca deixar cachear
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
     "Expires": "0",
-    "Vary": "Origin"
+    "Vary": "Origin",
   });
 
   try {
     const { email, cnpj } = req.body || {};
     const mail = String(email || "").trim().toLowerCase();
-    const num  = onlyDigits(cnpj || "");
+    const num = onlyDigits(cnpj || "");
 
     if (!mail || num.length !== 14) {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
-    // Pequenos retries porque o cliente acabou de ser criado na vitrine
-    let customer = null;
-    for (let i = 0; i < 6; i++) {
-      customer = await findCustomerByEmail(mail);
-      if (customer) break;
-      await sleep(600);
+    // Espera o cliente existir (o cadastro acabou de acontecer na vitrine)
+    const customer = await waitForCustomerByEmail(mail, 10, 700);
+    if (!customer) {
+      return res.status(404).json({ ok: false, error: "customer_not_found" });
     }
-    if (!customer) return res.status(404).json({ ok: false, error: "customer_not_found" });
 
     // Grava metafields
     await upsertCustomerMetafield(customer.id, "cnpj", num);
     await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
 
-    // (Opcional) marca tag de pendência
-    const tags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    // (Opcional) tag de pendência
+    const tags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
     if (!tags.includes("b2b-pending")) {
       tags.push("b2b-pending");
       await setCustomerTags(customer.id, tags);
@@ -198,9 +209,9 @@ app.post("/admin/approve", async (req, res) => {
     const c = await findCustomerByEmail(email);
     if (!c) return res.json({ ok: true, found: false });
 
-    const currentTags = (c.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    const currentTags = (c.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
     if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
-    const tags = currentTags.filter(t => t !== "b2b-pending");
+    const tags = currentTags.filter((t) => t !== "b2b-pending");
 
     await setCustomerTags(c.id, tags);
     await upsertCustomerMetafield(c.id, "cnpj_status", "approved");
@@ -222,8 +233,8 @@ app.post("/admin/reject", async (req, res) => {
     const c = await findCustomerByEmail(email);
     if (!c) return res.json({ ok: true, found: false });
 
-    const currentTags = (c.tags || "").split(",").map(t => t.trim()).filter(Boolean);
-    const tags = currentTags.filter(t => t !== "b2b-approved");
+    const currentTags = (c.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+    const tags = currentTags.filter((t) => t !== "b2b-approved");
 
     await setCustomerTags(c.id, tags);
     await upsertCustomerMetafield(c.id, "cnpj_status", "rejected");
@@ -240,6 +251,4 @@ app.get("/admin/reject", (req, res) => app._router.handle({ ...req, method: "POS
 app.get("/", (_, res) => res.send("ok"));
 
 /* ======== Start ======== */
-app.listen(process.env.PORT || 3000, () =>
-  console.log("B2B API up")
-);
+app.listen(process.env.PORT || 3000, () => console.log("B2B API up"));
