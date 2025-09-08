@@ -40,6 +40,7 @@ const api = async (path, opts = {}) => {
 };
 
 const onlyDigits = (s = "") => s.replace(/\D/g, "").slice(0, 14);
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* ======== Helpers de cliente/metafield/tags ======== */
 async function findCustomerByEmail(email) {
@@ -104,6 +105,7 @@ function guard(req, res) {
 
 /* ======== Public: validação de login ======== */
 app.get("/validate-login", async (req, res) => {
+  // nunca deixar cachear
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
     "Pragma": "no-cache",
@@ -123,12 +125,12 @@ app.get("/validate-login", async (req, res) => {
     if (!customer) return res.json({ ok: true, exists: false });
 
     const metas = await api(`/customers/${customer.id}/metafields.json?namespace=custom`);
-    const mfCnpjField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj");
+    const mfCnpjField   = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj");
     const mfStatusField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj_status");
 
     const mfCnpj = mfCnpjField ? String(mfCnpjField.value || "") : "";
     const cnpj_status = (mfStatusField ? String(mfStatusField.value || "") : "").toLowerCase();
-    const cnpj_match = onlyDigits(mfCnpj) === cnpj;
+    const cnpj_match  = onlyDigits(mfCnpj) === cnpj;
 
     const hasApprovedTag = (customer.tags || "").split(",").map(t => t.trim()).includes("b2b-approved");
     const approved = hasApprovedTag && cnpj_status === "approved";
@@ -142,6 +144,14 @@ app.get("/validate-login", async (req, res) => {
 
 /* ======== Public: registrar CNPJ ======== */
 app.post("/register-cnpj", async (req, res) => {
+  // nunca deixar cachear
+  res.set({
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Vary": "Origin"
+  });
+
   try {
     const { email, cnpj } = req.body || {};
     const mail = String(email || "").trim().toLowerCase();
@@ -151,12 +161,20 @@ app.post("/register-cnpj", async (req, res) => {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
-    const customer = await findCustomerByEmail(mail);
+    // Pequenos retries porque o cliente acabou de ser criado na vitrine
+    let customer = null;
+    for (let i = 0; i < 6; i++) {
+      customer = await findCustomerByEmail(mail);
+      if (customer) break;
+      await sleep(600);
+    }
     if (!customer) return res.status(404).json({ ok: false, error: "customer_not_found" });
 
+    // Grava metafields
     await upsertCustomerMetafield(customer.id, "cnpj", num);
     await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
 
+    // (Opcional) marca tag de pendência
     const tags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!tags.includes("b2b-pending")) {
       tags.push("b2b-pending");
