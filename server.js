@@ -6,9 +6,15 @@ import rateLimit from "express-rate-limit";
 const app = express();
 
 /* ======== ENVs ======== */
+// Shop/admin continuam no domínio myshopify (NÃO troque)
 const SHOP   = process.env.SHOPIFY_SHOP || "elementsparaempresas.myshopify.com";
 const TOKEN  = process.env.SHOPIFY_ADMIN_TOKEN || "";
-const ORIGIN = process.env.B2B_ALLOWED_ORIGIN || "https://elementsparaempresas.myshopify.com";
+
+// Agora aceitamos várias origens, separadas por vírgula.
+// Ex.: B2B_ALLOWED_ORIGIN="https://corporativo.elements.com.br,https://elementsparaempresas.myshopify.com"
+const ORIGINS_ENV = process.env.B2B_ALLOWED_ORIGIN
+  || "https://corporativo.elements.com.br,https://elementsparaempresas.myshopify.com";
+
 const ADMIN_SECRET = process.env.B2B_ADMIN_SECRET || ""; // secret para rotas /admin/*
 /* ====================== */
 
@@ -16,9 +22,45 @@ app.set("trust proxy", 1);
 app.set("etag", false); // evita 304/ETag
 
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
-app.use(cors({ origin: ORIGIN, methods: ["GET", "POST", "OPTIONS"] }));
 app.use(express.json());
-app.options("*", cors());
+
+// -------- CORS robusto (múltiplas origens + preview) --------
+const ALLOWED_ORIGINS = ORIGINS_ENV.split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
+// helper para validar origin (string tipo "https://dominio")
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // requests sem Origin (ex.: curl) – libera
+  try {
+    const { hostname } = new URL(origin);
+    // lista explícita
+    if (ALLOWED_ORIGINS.includes(origin)) return true;
+    // permitir myshopify e shopifypreview (tema/preview)
+    if (hostname.endsWith(".myshopify.com")) return true;
+    if (hostname.endsWith(".shopifypreview.com")) return true;
+    if (hostname === "admin.shopify.com") return true; // editor do tema
+  } catch {}
+  return false;
+}
+
+app.use(
+  cors({
+    origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "X-B2B-Admin-Secret"],
+    credentials: false,
+  })
+);
+
+// responde preflight para tudo
+app.options("*", (req, res) => {
+  if (!isAllowedOrigin(req.headers.origin || "")) return res.sendStatus(403);
+  res.set("Access-Control-Allow-Origin", req.headers.origin || "*");
+  res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type, X-B2B-Admin-Secret");
+  res.sendStatus(204);
+});
 
 /* ======== Helper REST Admin ======== */
 const api = async (path, opts = {}) => {
@@ -74,7 +116,9 @@ async function upsertCustomerMetafield(
   namespace = "custom"
 ) {
   const metas = await api(`/customers/${customerId}/metafields.json?namespace=${namespace}`);
-  const existing = (metas.metafields || []).find((m) => String(m.key).toLowerCase() === String(key).toLowerCase());
+  const existing = (metas.metafields || []).find(
+    (m) => String(m.key).toLowerCase() === String(key).toLowerCase()
+  );
 
   if (existing) {
     await api(`/metafields/${existing.id}.json`, {
