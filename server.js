@@ -7,24 +7,27 @@ const app = express();
 
 /* ======== ENVs ======== */
 // Shop/admin continuam no domínio myshopify (NÃO troque)
-const SHOP   = process.env.SHOPIFY_SHOP || "elementsparaempresas.myshopify.com";
-const TOKEN  = process.env.SHOPIFY_ADMIN_TOKEN || "";
+const SHOP  = process.env.SHOPIFY_SHOP || "elementsparaempresas.myshopify.com";
+const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN || "";
 
 // Agora aceitamos várias origens, separadas por vírgula.
 // Ex.: B2B_ALLOWED_ORIGIN="https://corporativo.elements.com.br,https://elementsparaempresas.myshopify.com"
-const ORIGINS_ENV = process.env.B2B_ALLOWED_ORIGIN
-  || "https://corporativo.elements.com.br,https://elementsparaempresas.myshopify.com";
+const ORIGINS_ENV =
+  process.env.B2B_ALLOWED_ORIGIN ||
+  "https://corporativo.elements.com.br,https://elementsparaempresas.myshopify.com";
 
 const ADMIN_SECRET = process.env.B2B_ADMIN_SECRET || ""; // secret para rotas /admin/*
 
-// ReceitaWS + fallback BrasilAPI
-const RECEITAWS_TOKEN = process.env.B2B_RECEITAWS_TOKEN || ""; // <<< coloque seu token aqui via ENV
-const RECEITAWS_BASE  = process.env.B2B_RECEITAWS_BASE || "https://www.receitaws.com.br/v1"; // v1 por compatibilidade
-// Modo de autenticação: "query" (ex: .../cnpj/XYZ?token=XXX) ou "bearer" (Authorization: Bearer XXX)
-const RECEITAWS_TOKEN_MODE = (process.env.B2B_RECEITAWS_TOKEN_MODE || "query").toLowerCase();
-// Ordem de provedores: "receitaws,brasilapi" ou o que preferir
-const CNPJ_PROVIDER_ORDER = (process.env.B2B_CNPJ_PROVIDER_ORDER || "receitaws,brasilapi")
-  .split(",").map(s => s.trim()).filter(Boolean);
+// ===== ReceitaWS (somente ele) =====
+const RECEITAWS_TOKEN = process.env.B2B_RECEITAWS_TOKEN || ""; // coloque via ENV (não exponha no front)
+const RECEITAWS_BASE  = (process.env.B2B_RECEITAWS_BASE || "https://www.receitaws.com.br/v1").replace(/\/$/, "");
+// "query" ( .../cnpj/XYZ?token=XXX ) ou "bearer" (Authorization: Bearer XXX)
+const RECEITAWS_TOKEN_MODE = (process.env.B2B_RECEITAWS_TOKEN_MODE || "bearer").toLowerCase();
+
+// Auto-approve quando ReceitaWS retornar empresa ATIVA
+const AUTO_APPROVE =
+  String(process.env.B2B_AUTO_APPROVE || "true").toLowerCase() === "true";
+
 // Cache TTL para consultas de CNPJ (ms)
 const CNPJ_CACHE_TTL_MS = Number(process.env.B2B_CNPJ_CACHE_TTL_MS || 1000 * 60 * 60 * 24); // 24h
 /* ====================== */
@@ -36,9 +39,7 @@ app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 app.use(express.json());
 
 // -------- CORS robusto (múltiplas origens + preview) --------
-const ALLOWED_ORIGINS = ORIGINS_ENV.split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
+const ALLOWED_ORIGINS = ORIGINS_ENV.split(",").map(s => s.trim()).filter(Boolean);
 
 function isAllowedOrigin(origin) {
   if (!origin) return true; // requests sem Origin (ex.: curl) – libera
@@ -85,13 +86,17 @@ const api = async (path, opts = {}) => {
     console.error("REST API error:", res.status, text.slice(0, 400));
     throw new Error(`${res.status} ${text}`);
   }
-  try { return JSON.parse(text); } catch { return {}; }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
 };
 
 const onlyDigits = (s = "") => s.replace(/\D/g, "").slice(0, 14);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ======== Validador rápido de CNPJ ======== */
+/* ======== Validador rápido de CNPJ (dígitos) ======== */
 function isValidCNPJ(v) {
   const c = onlyDigits(v);
   if (c.length !== 14) return false;
@@ -103,7 +108,7 @@ function isValidCNPJ(v) {
       if (factor < 2) factor = 9;
     }
     const mod = sum % 11;
-    return (mod < 2) ? 0 : 11 - mod;
+    return mod < 2 ? 0 : 11 - mod;
   };
   const d1 = calc(c.slice(0, 12));
   const d2 = calc(c.slice(0, 12) + d1);
@@ -123,10 +128,10 @@ function saveToCache(cnpj, data) {
   cnpjCache.set(onlyDigits(cnpj), { exp: Date.now() + CNPJ_CACHE_TTL_MS, data });
 }
 
-/* ======== Fetchers de provedores ======== */
+/* ======== ReceitaWS (único provedor) ======== */
 async function fetchCnpjReceitaWS(cnpj) {
   const num = onlyDigits(cnpj);
-  let url = `${RECEITAWS_BASE.replace(/\/$/, "")}/cnpj/${num}`;
+  let url = `${RECEITAWS_BASE}/cnpj/${num}`;
   const headers = {};
   if (RECEITAWS_TOKEN) {
     if (RECEITAWS_TOKEN_MODE === "bearer") {
@@ -135,13 +140,15 @@ async function fetchCnpjReceitaWS(cnpj) {
       url += (url.includes("?") ? "&" : "?") + `token=${encodeURIComponent(RECEITAWS_TOKEN)}`;
     }
   }
-  const res = await fetch(url, { headers, timeout: 12_000 });
+  const cached = getFromCache(num);
+  if (cached) return cached;
+
+  const res = await fetch(url, { headers /* , signal: AbortSignal.timeout(12000) */ });
   const json = await res.json().catch(() => ({}));
 
-  // Formatos comuns vistos do ReceitaWS
-  // { status: "OK"|"ERROR", message?: string, nome, fantasia, situacao, abertura, uf, ... }
+  // Formato clássico
   if (json && json.status === "OK") {
-    return {
+    const result = {
       provider: "receitaws",
       found: true,
       active: String(json.situacao || "").toUpperCase() === "ATIVA",
@@ -151,77 +158,37 @@ async function fetchCnpjReceitaWS(cnpj) {
       uf: json.uf || "",
       raw: json,
     };
+    saveToCache(num, result);
+    return result;
   }
 
-  // Alguns planos retornam sem "status", mas com campos diretos
+  // Alguns planos não trazem "status"
   if (json && (json.nome || json.razao || json.razao_social)) {
-    return {
+    const result = {
       provider: "receitaws",
       found: true,
-      active: String(json.situacao || json.situacao_cadastral || "").toUpperCase().includes("ATIV"),
+      active: String(json.situacao || json.situacao_cadastral || "")
+        .toUpperCase()
+        .includes("ATIV"),
       razao: json.nome || json.razao || json.razao_social || "",
       fantasia: json.fantasia || json.nome_fantasia || "",
       abertura: json.abertura || json.data_abertura || "",
       uf: json.uf || (json.endereco && json.endereco.uf) || "",
       raw: json,
     };
+    saveToCache(num, result);
+    return result;
   }
 
-  // status ERROR ou não encontrado
-  return {
+  const notFound = {
     provider: "receitaws",
     found: false,
     active: false,
-    err: json && (json.message || json.error || json.status) || "not_found",
+    err: (json && (json.message || json.error || json.status)) || "not_found",
     raw: json,
   };
-}
-
-async function fetchCnpjBrasilAPI(cnpj) {
-  const num = onlyDigits(cnpj);
-  const url = `https://brasilapi.com.br/api/cnpj/v1/${num}`;
-  const res = await fetch(url, { timeout: 12_000 });
-  const json = await res.json().catch(() => ({}));
-  if (json && (json.razao_social || json.nome_fantasia)) {
-    return {
-      provider: "brasilapi",
-      found: true,
-      active: String(json.situacao_cadastral || "").toUpperCase().includes("ATIV"),
-      razao: json.razao_social || "",
-      fantasia: json.nome_fantasia || "",
-      abertura: json.data_abertura || "",
-      uf: (json.endereco && json.endereco.uf) || json.uf || "",
-      raw: json,
-    };
-  }
-  return {
-    provider: "brasilapi",
-    found: false,
-    active: false,
-    err: json && (json.message || json.type) || "not_found",
-    raw: json,
-  };
-}
-
-async function resolveCNPJ(cnpj) {
-  const num = onlyDigits(cnpj);
-  const cached = getFromCache(num);
-  if (cached) return cached;
-
-  let result = { provider: null, found: false, active: false };
-  for (const prov of CNPJ_PROVIDER_ORDER) {
-    try {
-      if (prov === "receitaws") result = await fetchCnpjReceitaWS(num);
-      else if (prov === "brasilapi") result = await fetchCnpjBrasilAPI(num);
-      if (result && result.found) break;
-    } catch (e) {
-      console.warn(`Provider ${prov} error`, e.message);
-    }
-  }
-
-  // guarda no cache mesmo que não encontrado para evitar martelar provedores
-  saveToCache(num, result);
-  return result;
+  saveToCache(num, notFound);
+  return notFound;
 }
 
 /* ======== Helpers de cliente/metafield/tags ======== */
@@ -283,6 +250,41 @@ async function upsertCustomerMetafield(
   }
 }
 
+/* ======== Helper: validar no ReceitaWS e aprovar se ATIVA ======== */
+async function validateAndMaybeApprove(customer, cnpjNum) {
+  const num = onlyDigits(cnpjNum);
+  const result = await fetchCnpjReceitaWS(num);
+
+  // Metacampos informativos
+  await upsertCustomerMetafield(customer.id, "cnpj_exists", String(!!result.found), "boolean");
+  await upsertCustomerMetafield(
+    customer.id,
+    "cnpj_situacao",
+    result.active ? "ATIVA" : "INATIVA"
+  );
+  if (result.razao) await upsertCustomerMetafield(customer.id, "cnpj_razao", result.razao);
+  if (result.fantasia) await upsertCustomerMetafield(customer.id, "cnpj_fantasia", result.fantasia);
+  await upsertCustomerMetafield(
+    customer.id,
+    "cnpj_checked_at",
+    new Date().toISOString(),
+    "date_time"
+  );
+
+  // Auto-approve se encontrado e ATIVA
+  let approved = false;
+  if (AUTO_APPROVE && result.found && result.active) {
+    const currentTags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+    if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
+    const tags = currentTags.filter((t) => t !== "b2b-pending");
+    await setCustomerTags(customer.id, tags);
+    await upsertCustomerMetafield(customer.id, "cnpj_status", "approved");
+    approved = true;
+  }
+
+  return { approved, result };
+}
+
 /* ======== Guard das rotas admin ======== */
 function hasSecret(req) {
   const header = req.header("X-B2B-Admin-Secret");
@@ -342,7 +344,7 @@ app.get("/validate-login", async (req, res) => {
   }
 });
 
-/* ======== Public: registrar CNPJ ======== */
+/* ======== Public: registrar CNPJ (agora valida e aprova se ATIVA) ======== */
 app.post("/register-cnpj", async (req, res) => {
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -370,21 +372,33 @@ app.post("/register-cnpj", async (req, res) => {
     await upsertCustomerMetafield(customer.id, "cnpj", num);
     await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
 
-    // (Opcional) tag de pendência
+    // Garante tag de pendência
     const tags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
     if (!tags.includes("b2b-pending")) {
       tags.push("b2b-pending");
       await setCustomerTags(customer.id, tags);
     }
 
-    res.json({ ok: true });
+    // NOVO: valida no ReceitaWS e (se ATIVA) aprova automaticamente
+    const { approved, result } = await validateAndMaybeApprove(customer, num);
+
+    res.json({
+      ok: true,
+      validated: true,
+      autoApproved: approved,
+      provider: result.provider,
+      found: result.found,
+      active: result.active,
+      razao: result.razao || null,
+      fantasia: result.fantasia || null,
+    });
   } catch (e) {
     console.error("register-cnpj error:", e);
     res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
 
-/* ======== NEW: validar CNPJ via ReceitaWS (com fallback BrasilAPI) ======== */
+/* ======== Public: validar CNPJ isoladamente (também aprova se ATIVA) ======== */
 app.post("/validate-cnpj", async (req, res) => {
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -405,15 +419,18 @@ app.post("/validate-cnpj", async (req, res) => {
     const customer = await findCustomerByEmail(mail);
     if (!customer) return res.status(404).json({ ok: false, error: "customer_not_found" });
 
-    const result = await resolveCNPJ(num);
+    // Valida e (se ATIVA) aprova
+    const { approved, result } = await validateAndMaybeApprove(customer, num);
 
-    // Atualiza metafields informativos (não aprova automaticamente)
-    await upsertCustomerMetafield(customer.id, "cnpj_exists", String(!!result.found), "boolean");
-    await upsertCustomerMetafield(customer.id, "cnpj_situacao", result.active ? "ATIVA" : "INATIVA");
-    if (result.razao)    await upsertCustomerMetafield(customer.id, "cnpj_razao", result.razao);
-    if (result.fantasia) await upsertCustomerMetafield(customer.id, "cnpj_fantasia", result.fantasia);
-
-    res.json({ ok: true, provider: result.provider, found: result.found, active: result.active, razao: result.razao || null, fantasia: result.fantasia || null });
+    res.json({
+      ok: true,
+      autoApproved: approved,
+      provider: result.provider,
+      found: result.found,
+      active: result.active,
+      razao: result.razao || null,
+      fantasia: result.fantasia || null,
+    });
   } catch (e) {
     console.error("validate-cnpj error:", e);
     res.status(500).json({ ok: false, error: "internal_error" });
