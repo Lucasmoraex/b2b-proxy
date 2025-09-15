@@ -15,7 +15,7 @@ const ORIGINS_ENV =
 
 const ADMIN_SECRET = process.env.B2B_ADMIN_SECRET || "";
 
-// ===== ReceitaWS =====
+// ReceitaWS
 const RECEITAWS_TOKEN = process.env.B2B_RECEITAWS_TOKEN || "";
 const RECEITAWS_BASE  = (process.env.B2B_RECEITAWS_BASE || "https://www.receitaws.com.br/v1").replace(/\/$/, "");
 const RECEITAWS_TOKEN_MODE = (process.env.B2B_RECEITAWS_TOKEN_MODE || "bearer").toLowerCase();
@@ -32,7 +32,6 @@ app.use(express.json());
 
 // -------- CORS --------
 const ALLOWED_ORIGINS = ORIGINS_ENV.split(",").map(s => s.trim()).filter(Boolean);
-
 function isAllowedOrigin(origin) {
   if (!origin) return true;
   try {
@@ -44,16 +43,12 @@ function isAllowedOrigin(origin) {
   } catch {}
   return false;
 }
-
-app.use(
-  cors({
-    origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "X-B2B-Admin-Secret"],
-    credentials: false,
-  })
-);
-
+app.use(cors({
+  origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "X-B2B-Admin-Secret"],
+  credentials: false,
+}));
 app.options("*", (req, res) => {
   if (!isAllowedOrigin(req.headers.origin || "")) return res.sendStatus(403);
   res.set("Access-Control-Allow-Origin", req.headers.origin || "*");
@@ -62,7 +57,7 @@ app.options("*", (req, res) => {
   res.sendStatus(204);
 });
 
-/* ======== Helper REST Admin ======== */
+/* ======== Shopify REST helper ======== */
 const api = async (path, opts = {}) => {
   const res = await fetch(`https://${SHOP}/admin/api/2024-07${path}`, {
     method: opts.method || "GET",
@@ -82,14 +77,15 @@ const api = async (path, opts = {}) => {
 
 const onlyDigits = (s = "") => s.replace(/\D/g, "").slice(0, 14);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const isIso = (v) => !!String(v).match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
 
-/* ======== Validador rápido de CNPJ (apenas estrutura) ======== */
+/* ======== “válido” só de estrutura ======== */
 function isValidCNPJStructure(v) {
   return onlyDigits(v).length === 14;
 }
 
-/* ======== Cache simples em memória ======== */
-const cnpjCache = new Map(); // key: cnpj -> { exp: ts, data: {...} }
+/* ======== Cache simples ======== */
+const cnpjCache = new Map();
 function getFromCache(cnpj) {
   const k = onlyDigits(cnpj);
   const hit = cnpjCache.get(k);
@@ -107,12 +103,10 @@ async function fetchCnpjReceitaWS(cnpj) {
   let url = `${RECEITAWS_BASE}/cnpj/${num}`;
   const headers = {};
   if (RECEITAWS_TOKEN) {
-    if (RECEITAWS_TOKEN_MODE === "bearer") {
-      headers["Authorization"] = `Bearer ${RECEITAWS_TOKEN}`;
-    } else {
-      url += (url.includes("?") ? "&" : "?") + `token=${encodeURIComponent(RECEITAWS_TOKEN)}`;
-    }
+    if (RECEITAWS_TOKEN_MODE === "bearer") headers["Authorization"] = `Bearer ${RECEITAWS_TOKEN}`;
+    else url += (url.includes("?") ? "&" : "?") + `token=${encodeURIComponent(RECEITAWS_TOKEN)}`;
   }
+
   const cached = getFromCache(num);
   if (cached) return cached;
 
@@ -160,13 +154,12 @@ async function fetchCnpjReceitaWS(cnpj) {
   return notFound;
 }
 
-/* ======== Helpers de cliente/metafield/tags ======== */
+/* ======== Customer helpers ======== */
 async function findCustomerByEmail(email) {
   const q = encodeURIComponent(`email:${email}`);
   const cs = await api(`/customers/search.json?query=${q}`);
   return (cs.customers || [])[0] || null;
 }
-
 async function waitForCustomerByEmail(email, retries = 8, delayMs = 800) {
   for (let i = 0; i < retries; i++) {
     const c = await findCustomerByEmail(email);
@@ -175,88 +168,73 @@ async function waitForCustomerByEmail(email, retries = 8, delayMs = 800) {
   }
   return null;
 }
-
 async function setCustomerTags(customerId, tagsArray) {
   const tags = [...new Set(tagsArray.map((t) => t.trim()).filter(Boolean))].join(", ");
-  await api(`/customers/${customerId}.json`, {
-    method: "PUT",
-    body: { customer: { id: customerId, tags } },
-  });
+  await api(`/customers/${customerId}.json`, { method: "PUT", body: { customer: { id: customerId, tags } }});
 }
 
-/* === Metafield type resolver (evita 422) === */
-const defCache = new Map(); // key: `${namespace}|customer` -> array of defs
-
-async function getCustomerDefs(namespace = "custom") {
-  const k = `${namespace}|customer`;
-  if (defCache.has(k)) return defCache.get(k);
-  const defs = await api(`/metafield_definitions.json?owner_resource=customer&namespace=${encodeURIComponent(namespace)}`);
-  const list = defs.metafield_definitions || [];
-  defCache.set(k, list);
-  return list;
+/* ======== Metafields robustos (sem depender de definitions) ======== */
+function guessTypesFor(value) {
+  const v = value;
+  const isBool = v === true || v === false || v === "true" || v === "false";
+  const digitsOnly = String(v).match(/^-?\d+$/);
+  const iso = isIso(v);
+  if (isBool) return ["boolean", "single_line_text_field"];
+  if (iso) return ["date_time", "single_line_text_field"];
+  if (digitsOnly) return ["number_integer", "single_line_text_field"];
+  return ["single_line_text_field"];
 }
-
-async function resolveTypeForKey(key, fallback = "single_line_text_field", namespace = "custom") {
-  const defs = await getCustomerDefs(namespace);
-  const d = defs.find(m => (m.key || "").toLowerCase() === key.toLowerCase());
-  return d ? d.type : fallback;
-}
-
-function coerceValueForType(type, value) {
+function coerceFor(type, value) {
   switch ((type || "").toLowerCase()) {
-    case "number_integer":
-      return String(value).replace(/[^\d-]/g, "");
-    case "number_decimal":
-      return String(value).replace(/[^0-9.-]/g, "");
-    case "boolean":
-      return String(value === true || value === "true" || value === 1);
-    case "date_time":
-      return new Date(value).toISOString();
-    default:
-      return String(value ?? "");
+    case "boolean": return String(value === true || value === "true" || value === 1);
+    case "number_integer": return String(value).replace(/[^\d-]/g, "");
+    case "number_decimal": return String(value).replace(/[^0-9.-]/g, "");
+    case "date_time": return isIso(value) ? String(value) : new Date(value).toISOString();
+    default: return String(value ?? "");
   }
 }
 
-async function upsertCustomerMetafield(
-  customerId,
-  key,
-  value,
-  typeHint = "single_line_text_field",
-  namespace = "custom"
-) {
+async function upsertCustomerMetafield(customerId, key, value, typeHint = "single_line_text_field", namespace = "custom") {
+  // 1) Existe? -> PUT sem type
   const metas = await api(`/customers/${customerId}/metafields.json?namespace=${namespace}`);
-  const existing = (metas.metafields || []).find(
-    (m) => String(m.key).toLowerCase() === String(key).toLowerCase()
-  );
-
+  const existing = (metas.metafields || []).find(m => (m.key || "").toLowerCase() === key.toLowerCase());
   if (existing) {
-    // atualizar sem enviar "type" (deixa o existente vencer)
-    const val = coerceValueForType(existing.type, value);
-    await api(`/metafields/${existing.id}.json`, {
-      method: "PUT",
-      body: { metafield: { id: existing.id, value: val } },
-    });
+    const val = coerceFor(existing.type, value);
+    await api(`/metafields/${existing.id}.json`, { method: "PUT", body: { metafield: { id: existing.id, value: val } }});
     return existing.id;
-  } else {
-    const finalType = await resolveTypeForKey(key, typeHint, namespace);
-    const val = coerceValueForType(finalType, value);
-    await api(`/metafields.json`, {
-      method: "POST",
-      body: {
-        metafield: {
-          namespace,
-          key,
-          owner_id: customerId,
-          owner_resource: "customer",
-          type: finalType,
-          value: val,
-        },
-      },
-    });
   }
+
+  // 2) Não existe? -> POST com tentativas de tipo
+  const candidates = [typeHint, ...guessTypesFor(value)].filter((t,i,arr) => t && arr.indexOf(t) === i);
+  let lastErr;
+  for (const t of candidates) {
+    try {
+      const val = coerceFor(t, value);
+      await api(`/metafields.json`, {
+        method: "POST",
+        body: {
+          metafield: {
+            namespace,
+            key,
+            owner_id: customerId,
+            owner_resource: "customer",
+            type: t,
+            value: val,
+          },
+        },
+      });
+      return true;
+    } catch (e) {
+      lastErr = e;
+      // tenta próximo tipo
+    }
+  }
+  // se nada deu certo, loga e segue sem travar o fluxo do usuário
+  console.warn(`upsertCustomerMetafield failed for ${namespace}.${key}`, lastErr?.message || lastErr);
+  return false;
 }
 
-/* ======== Helper: validar no ReceitaWS e aprovar se ATIVA ======== */
+/* ======== Valida e talvez aprova ======== */
 async function validateAndMaybeApprove(customer, cnpjNum) {
   const num = onlyDigits(cnpjNum);
   const result = await fetchCnpjReceitaWS(num);
@@ -279,7 +257,7 @@ async function validateAndMaybeApprove(customer, cnpjNum) {
   return { approved, result };
 }
 
-/* ======== Guard das rotas admin ======== */
+/* ======== Guard admin ======== */
 function hasSecret(req) {
   const header = req.header("X-B2B-Admin-Secret");
   const qp = req.query.secret;
@@ -293,42 +271,26 @@ function guard(req, res) {
   return true;
 }
 
-/* ======== Public: validação de login ======== */
+/* ======== validate-login ======== */
 app.get("/validate-login", async (req, res) => {
-  res.set({
-    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-    "Surrogate-Control": "no-store",
-    "Vary": "Origin",
-  });
-
+  res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Surrogate-Control": "no-store", "Vary": "Origin" });
   try {
     const email = String(req.query.email || "").trim().toLowerCase();
     const cnpj = onlyDigits(String(req.query.cnpj || ""));
-
-    if (!email || cnpj.length !== 14)
-      return res.status(400).json({ ok: false, exists: false });
+    if (!email || cnpj.length !== 14) return res.status(400).json({ ok: false, exists: false });
 
     const customer = await findCustomerByEmail(email);
     if (!customer) return res.json({ ok: true, exists: false });
 
     const metas = await api(`/customers/${customer.id}/metafields.json?namespace=custom`);
-    const mfCnpjField = (metas.metafields || []).find(
-      (m) => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj"
-    );
-    const mfStatusField = (metas.metafields || []).find(
-      (m) => m.key?.toLowerCase() === "cnpj_status"
-    );
+    const mfCnpjField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj");
+    const mfStatusField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj_status");
 
     const mfCnpj = mfCnpjField ? String(mfCnpjField.value || "") : "";
     const cnpj_status = (mfStatusField ? String(mfStatusField.value || "") : "").toLowerCase();
     const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
-    const hasApprovedTag = (customer.tags || "")
-      .split(",")
-      .map((t) => t.trim())
-      .includes("b2b-approved");
+    const hasApprovedTag = (customer.tags || "").split(",").map(t => t.trim()).includes("b2b-approved");
     const approved = hasApprovedTag && cnpj_status === "approved";
 
     res.json({ ok: true, exists: true, cnpj_match, approved, cnpj_status });
@@ -338,98 +300,59 @@ app.get("/validate-login", async (req, res) => {
   }
 });
 
-/* ======== Public: registrar CNPJ (grava sempre e valida; sem bloquear por dígito verif.) ======== */
+/* ======== register-cnpj ======== */
 app.post("/register-cnpj", async (req, res) => {
-  res.set({
-    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-    "Vary": "Origin",
-  });
-
+  res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Vary": "Origin" });
   try {
     const { email, cnpj } = req.body || {};
     const mail = String(email || "").trim().toLowerCase();
     const num = onlyDigits(cnpj || "");
-
-    if (!mail || !isValidCNPJStructure(num)) {
-      return res.status(400).json({ ok: false, error: "invalid_params" });
-    }
+    if (!mail || !isValidCNPJStructure(num)) return res.status(400).json({ ok: false, error: "invalid_params" });
 
     const customer = await waitForCustomerByEmail(mail, 12, 800);
-    if (!customer) {
-      return res.status(404).json({ ok: false, error: "customer_not_found" });
-    }
+    if (!customer) return res.status(404).json({ ok: false, error: "customer_not_found" });
 
-    // Grava base SEM forçar tipo (usa definitions/existente)
     await upsertCustomerMetafield(customer.id, "cnpj", num);
     await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
 
-    // Tag pendente
-    const tags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+    const tags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!tags.includes("b2b-pending")) {
       tags.push("b2b-pending");
       await setCustomerTags(customer.id, tags);
     }
 
-    // Valida e auto-aprova se ATIVA
     const { approved, result } = await validateAndMaybeApprove(customer, num);
 
-    res.json({
-      ok: true,
-      validated: true,
-      autoApproved: approved,
-      provider: result.provider,
-      found: result.found,
-      active: result.active,
-      razao: result.razao || null,
-      fantasia: result.fantasia || null,
-    });
+    res.json({ ok: true, validated: true, autoApproved: approved, provider: result.provider, found: result.found, active: result.active, razao: result.razao || null, fantasia: result.fantasia || null });
   } catch (e) {
     console.error("register-cnpj error:", e);
+    // não derruba o front — devolve erro claro
     res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
 
-/* ======== Public: validar CNPJ isoladamente ======== */
+/* ======== validate-cnpj ======== */
 app.post("/validate-cnpj", async (req, res) => {
-  res.set({
-    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-    "Vary": "Origin",
-  });
-
+  res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Vary": "Origin" });
   try {
     const { email, cnpj } = req.body || {};
     const mail = String(email || "").trim().toLowerCase();
     const num = onlyDigits(cnpj || "");
-
-    if (!mail || !isValidCNPJStructure(num)) {
-      return res.status(400).json({ ok: false, error: "invalid_params" });
-    }
+    if (!mail || !isValidCNPJStructure(num)) return res.status(400).json({ ok: false, error: "invalid_params" });
 
     const customer = await findCustomerByEmail(mail);
     if (!customer) return res.status(404).json({ ok: false, error: "customer_not_found" });
 
     const { approved, result } = await validateAndMaybeApprove(customer, num);
 
-    res.json({
-      ok: true,
-      autoApproved: approved,
-      provider: result.provider,
-      found: result.found,
-      active: result.active,
-      razao: result.razao || null,
-      fantasia: result.fantasia || null,
-    });
+    res.json({ ok: true, autoApproved: approved, provider: result.provider, found: result.found, active: result.active, razao: result.razao || null, fantasia: result.fantasia || null });
   } catch (e) {
     console.error("validate-cnpj error:", e);
     res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
 
-/* ======== Admin: aprovar / reprovar ======== */
+/* ======== Admin ======== */
 app.post("/admin/approve", async (req, res) => {
   if (!guard(req, res)) return;
   try {
@@ -439,9 +362,9 @@ app.post("/admin/approve", async (req, res) => {
     const c = await findCustomerByEmail(email);
     if (!c) return res.json({ ok: true, found: false });
 
-    const currentTags = (c.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+    const currentTags = (c.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
-    const tags = currentTags.filter((t) => t !== "b2b-pending");
+    const tags = currentTags.filter(t => t !== "b2b-pending");
 
     await setCustomerTags(c.id, tags);
     await upsertCustomerMetafield(c.id, "cnpj_status", "approved");
@@ -463,8 +386,8 @@ app.post("/admin/reject", async (req, res) => {
     const c = await findCustomerByEmail(email);
     if (!c) return res.json({ ok: true, found: false });
 
-    const currentTags = (c.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
-    const tags = currentTags.filter((t) => t !== "b2b-approved");
+    const currentTags = (c.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    const tags = currentTags.filter(t => t !== "b2b-approved");
 
     await setCustomerTags(c.id, tags);
     await upsertCustomerMetafield(c.id, "cnpj_status", "rejected");
