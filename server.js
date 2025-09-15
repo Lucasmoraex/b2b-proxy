@@ -6,28 +6,22 @@ import rateLimit from "express-rate-limit";
 const app = express();
 
 /* ======== ENVs ======== */
-// Shop/admin continuam no domínio myshopify (NÃO troque)
 const SHOP  = process.env.SHOPIFY_SHOP || "elementsparaempresas.myshopify.com";
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN || "";
 
-// Agora aceitamos várias origens, separadas por vírgula.
 const ORIGINS_ENV =
   process.env.B2B_ALLOWED_ORIGIN ||
   "https://corporativo.elements.com.br,https://elementsparaempresas.myshopify.com";
 
-const ADMIN_SECRET = process.env.B2B_ADMIN_SECRET || ""; // secret para rotas /admin/*
+const ADMIN_SECRET = process.env.B2B_ADMIN_SECRET || "";
 
-// ===== ReceitaWS (somente ele) =====
-const RECEITAWS_TOKEN = process.env.B2B_RECEITAWS_TOKEN || ""; // via ENV
+// ===== ReceitaWS =====
+const RECEITAWS_TOKEN = process.env.B2B_RECEITAWS_TOKEN || "";
 const RECEITAWS_BASE  = (process.env.B2B_RECEITAWS_BASE || "https://www.receitaws.com.br/v1").replace(/\/$/, "");
-// "query" ( .../cnpj/XYZ?token=XXX ) ou "bearer" (Authorization: Bearer XXX)
 const RECEITAWS_TOKEN_MODE = (process.env.B2B_RECEITAWS_TOKEN_MODE || "bearer").toLowerCase();
 
-// Auto-approve quando ReceitaWS retornar empresa ATIVA
 const AUTO_APPROVE = String(process.env.B2B_AUTO_APPROVE || "true").toLowerCase() === "true";
-
-// Cache TTL para consultas de CNPJ (ms)
-const CNPJ_CACHE_TTL_MS = Number(process.env.B2B_CNPJ_CACHE_TTL_MS || 1000 * 60 * 60 * 24); // 24h
+const CNPJ_CACHE_TTL_MS = Number(process.env.B2B_CNPJ_CACHE_TTL_MS || 1000 * 60 * 60 * 24);
 /* ====================== */
 
 app.set("trust proxy", 1);
@@ -36,11 +30,11 @@ app.set("etag", false);
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 app.use(express.json());
 
-// -------- CORS robusto (múltiplas origens + preview) --------
+// -------- CORS --------
 const ALLOWED_ORIGINS = ORIGINS_ENV.split(",").map(s => s.trim()).filter(Boolean);
 
 function isAllowedOrigin(origin) {
-  if (!origin) return true; // requests sem Origin (ex.: curl)
+  if (!origin) return true;
   try {
     const { hostname } = new URL(origin);
     if (ALLOWED_ORIGINS.includes(origin)) return true;
@@ -89,23 +83,9 @@ const api = async (path, opts = {}) => {
 const onlyDigits = (s = "") => s.replace(/\D/g, "").slice(0, 14);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/* ======== Validador rápido de CNPJ (dígitos) ======== */
-function isValidCNPJ(v) {
-  const c = onlyDigits(v);
-  if (c.length !== 14) return false;
-  if (/^(\d)\1{13}$/.test(c)) return false;
-  const calc = (base) => {
-    let sum = 0, factor = base.length - 7;
-    for (let i = 0; i < base.length; i++) {
-      sum += Number(base[i]) * factor--;
-      if (factor < 2) factor = 9;
-    }
-    const mod = sum % 11;
-    return mod < 2 ? 0 : 11 - mod;
-  };
-  const d1 = calc(c.slice(0, 12));
-  const d2 = calc(c.slice(0, 12) + d1);
-  return c.endsWith(`${d1}${d2}`);
+/* ======== Validador rápido de CNPJ (apenas estrutura) ======== */
+function isValidCNPJStructure(v) {
+  return onlyDigits(v).length === 14;
 }
 
 /* ======== Cache simples em memória ======== */
@@ -121,7 +101,7 @@ function saveToCache(cnpj, data) {
   cnpjCache.set(onlyDigits(cnpj), { exp: Date.now() + CNPJ_CACHE_TTL_MS, data });
 }
 
-/* ======== ReceitaWS (único provedor) ======== */
+/* ======== ReceitaWS ======== */
 async function fetchCnpjReceitaWS(cnpj) {
   const num = onlyDigits(cnpj);
   let url = `${RECEITAWS_BASE}/cnpj/${num}`;
@@ -136,11 +116,11 @@ async function fetchCnpjReceitaWS(cnpj) {
   const cached = getFromCache(num);
   if (cached) return cached;
 
-  const res = await fetch(url, { headers /* , signal: AbortSignal.timeout(12000) */ });
+  const res = await fetch(url, { headers });
   const json = await res.json().catch(() => ({}));
 
   if (json && json.status === "OK") {
-    const result = {
+    const out = {
       provider: "receitaws",
       found: true,
       active: String(json.situacao || "").toUpperCase() === "ATIVA",
@@ -150,24 +130,23 @@ async function fetchCnpjReceitaWS(cnpj) {
       uf: json.uf || "",
       raw: json,
     };
-    saveToCache(num, result);
-    return result;
+    saveToCache(num, out);
+    return out;
   }
 
   if (json && (json.nome || json.razao || json.razao_social)) {
-    const result = {
+    const out = {
       provider: "receitaws",
       found: true,
-      active: String(json.situacao || json.situacao_cadastral || "")
-        .toUpperCase().includes("ATIV"),
+      active: String(json.situacao || json.situacao_cadastral || "").toUpperCase().includes("ATIV"),
       razao: json.nome || json.razao || json.razao_social || "",
       fantasia: json.fantasia || json.nome_fantasia || "",
       abertura: json.abertura || json.data_abertura || "",
       uf: json.uf || (json.endereco && json.endereco.uf) || "",
       raw: json,
     };
-    saveToCache(num, result);
-    return result;
+    saveToCache(num, out);
+    return out;
   }
 
   const notFound = {
@@ -188,7 +167,6 @@ async function findCustomerByEmail(email) {
   return (cs.customers || [])[0] || null;
 }
 
-// Aguarda o cliente “aparecer” após o cadastro na vitrine
 async function waitForCustomerByEmail(email, retries = 8, delayMs = 800) {
   for (let i = 0; i < retries; i++) {
     const c = await findCustomerByEmail(email);
@@ -206,51 +184,62 @@ async function setCustomerTags(customerId, tagsArray) {
   });
 }
 
-/**
- * Upsert de metafield:
- * - Cria com `type` informado.
- * - Ao atualizar, NÃO envia `type` e força o valor no formato aceito por `existing.type`.
- */
+/* === Metafield type resolver (evita 422) === */
+const defCache = new Map(); // key: `${namespace}|customer` -> array of defs
+
+async function getCustomerDefs(namespace = "custom") {
+  const k = `${namespace}|customer`;
+  if (defCache.has(k)) return defCache.get(k);
+  const defs = await api(`/metafield_definitions.json?owner_resource=customer&namespace=${encodeURIComponent(namespace)}`);
+  const list = defs.metafield_definitions || [];
+  defCache.set(k, list);
+  return list;
+}
+
+async function resolveTypeForKey(key, fallback = "single_line_text_field", namespace = "custom") {
+  const defs = await getCustomerDefs(namespace);
+  const d = defs.find(m => (m.key || "").toLowerCase() === key.toLowerCase());
+  return d ? d.type : fallback;
+}
+
+function coerceValueForType(type, value) {
+  switch ((type || "").toLowerCase()) {
+    case "number_integer":
+      return String(value).replace(/[^\d-]/g, "");
+    case "number_decimal":
+      return String(value).replace(/[^0-9.-]/g, "");
+    case "boolean":
+      return String(value === true || value === "true" || value === 1);
+    case "date_time":
+      return new Date(value).toISOString();
+    default:
+      return String(value ?? "");
+  }
+}
+
 async function upsertCustomerMetafield(
   customerId,
   key,
   value,
-  type = "single_line_text_field",
+  typeHint = "single_line_text_field",
   namespace = "custom"
 ) {
   const metas = await api(`/customers/${customerId}/metafields.json?namespace=${namespace}`);
   const existing = (metas.metafields || []).find(
-    (m) => String(m.key || "").toLowerCase() === String(key).toLowerCase()
+    (m) => String(m.key).toLowerCase() === String(key).toLowerCase()
   );
 
-  // Função para coerção de valor com base no tipo
-  const coerce = (t, v) => {
-    const tnorm = String(t || "").toLowerCase();
-    if (tnorm === "boolean") {
-      // Shopify espera "true"/"false" como string
-      return String(v === true || v === "true" || v === 1 || v === "1");
-    }
-    if (tnorm === "number_integer" || tnorm === "number_decimal") {
-      const s = String(v).replace(",", ".");
-      return s;
-    }
-    if (tnorm === "date_time") {
-      try { return new Date(v).toISOString(); } catch { return new Date().toISOString(); }
-    }
-    // default: trata como string simples
-    return String(v == null ? "" : v);
-  };
-
   if (existing) {
-    // Atualiza respeitando o tipo existente
-    const coerced = coerce(existing.type, value);
+    // atualizar sem enviar "type" (deixa o existente vencer)
+    const val = coerceValueForType(existing.type, value);
     await api(`/metafields/${existing.id}.json`, {
       method: "PUT",
-      body: { metafield: { id: existing.id, value: coerced } }, // sem "type" no update
+      body: { metafield: { id: existing.id, value: val } },
     });
+    return existing.id;
   } else {
-    // Cria com o tipo especificado
-    const coerced = coerce(type, value);
+    const finalType = await resolveTypeForKey(key, typeHint, namespace);
+    const val = coerceValueForType(finalType, value);
     await api(`/metafields.json`, {
       method: "POST",
       body: {
@@ -259,8 +248,8 @@ async function upsertCustomerMetafield(
           key,
           owner_id: customerId,
           owner_resource: "customer",
-          type,
-          value: coerced,
+          type: finalType,
+          value: val,
         },
       },
     });
@@ -272,19 +261,12 @@ async function validateAndMaybeApprove(customer, cnpjNum) {
   const num = onlyDigits(cnpjNum);
   const result = await fetchCnpjReceitaWS(num);
 
-  // Metacampos informativos
   await upsertCustomerMetafield(customer.id, "cnpj_exists", !!result.found, "boolean");
-  await upsertCustomerMetafield(
-    customer.id,
-    "cnpj_situacao",
-    result.active ? "ATIVA" : "INATIVA",
-    "single_line_text_field"
-  );
+  await upsertCustomerMetafield(customer.id, "cnpj_situacao", result.active ? "ATIVA" : "INATIVA");
   if (result.razao)    await upsertCustomerMetafield(customer.id, "cnpj_razao", result.razao);
   if (result.fantasia) await upsertCustomerMetafield(customer.id, "cnpj_fantasia", result.fantasia);
   await upsertCustomerMetafield(customer.id, "cnpj_checked_at", new Date().toISOString(), "date_time");
 
-  // Auto-approve se encontrado e ATIVA
   let approved = false;
   if (AUTO_APPROVE && result.found && result.active) {
     const currentTags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
@@ -294,7 +276,6 @@ async function validateAndMaybeApprove(customer, cnpjNum) {
     await upsertCustomerMetafield(customer.id, "cnpj_status", "approved");
     approved = true;
   }
-
   return { approved, result };
 }
 
@@ -345,7 +326,8 @@ app.get("/validate-login", async (req, res) => {
     const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
     const hasApprovedTag = (customer.tags || "")
-      .split(",").map((t) => t.trim())
+      .split(",")
+      .map((t) => t.trim())
       .includes("b2b-approved");
     const approved = hasApprovedTag && cnpj_status === "approved";
 
@@ -356,7 +338,7 @@ app.get("/validate-login", async (req, res) => {
   }
 });
 
-/* ======== Public: registrar CNPJ (sempre grava; DV inválido = invalid) ======== */
+/* ======== Public: registrar CNPJ (grava sempre e valida; sem bloquear por dígito verif.) ======== */
 app.post("/register-cnpj", async (req, res) => {
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -370,45 +352,31 @@ app.post("/register-cnpj", async (req, res) => {
     const mail = String(email || "").trim().toLowerCase();
     const num = onlyDigits(cnpj || "");
 
-    // só barra parâmetros totalmente ruins
-    if (!mail || num.length !== 14) {
+    if (!mail || !isValidCNPJStructure(num)) {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
-    // Espera o cliente existir (o cadastro acabou de acontecer na vitrine)
-    const customer = await waitForCustomerByEmail(mail, 10, 700);
+    const customer = await waitForCustomerByEmail(mail, 12, 800);
     if (!customer) {
       return res.status(404).json({ ok: false, error: "customer_not_found" });
     }
 
-    // Sempre grava o CNPJ informado
+    // Grava base SEM forçar tipo (usa definitions/existente)
     await upsertCustomerMetafield(customer.id, "cnpj", num);
+    await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
 
-    // Garante tag de pendência
+    // Tag pendente
     const tags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
     if (!tags.includes("b2b-pending")) {
       tags.push("b2b-pending");
       await setCustomerTags(customer.id, tags);
     }
 
-    // Se DV inválido, marca como invalid e retorna 200
-    if (!isValidCNPJ(num)) {
-      await upsertCustomerMetafield(customer.id, "cnpj_status", "invalid");
-      return res.json({
-        ok: true,
-        saved: true,
-        validated: false,
-        reason: "invalid_checksum"
-      });
-    }
-
-    // DV OK → pendente, valida no ReceitaWS e (se ATIVA) aprova automaticamente
-    await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
+    // Valida e auto-aprova se ATIVA
     const { approved, result } = await validateAndMaybeApprove(customer, num);
 
-    return res.json({
+    res.json({
       ok: true,
-      saved: true,
       validated: true,
       autoApproved: approved,
       provider: result.provider,
@@ -423,7 +391,7 @@ app.post("/register-cnpj", async (req, res) => {
   }
 });
 
-/* ======== Public: validar CNPJ isoladamente (também aprova se ATIVA) ======== */
+/* ======== Public: validar CNPJ isoladamente ======== */
 app.post("/validate-cnpj", async (req, res) => {
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -437,34 +405,18 @@ app.post("/validate-cnpj", async (req, res) => {
     const mail = String(email || "").trim().toLowerCase();
     const num = onlyDigits(cnpj || "");
 
-    if (!mail || num.length !== 14) {
+    if (!mail || !isValidCNPJStructure(num)) {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
     const customer = await findCustomerByEmail(mail);
     if (!customer) return res.status(404).json({ ok: false, error: "customer_not_found" });
 
-    // Se DV inválido, só marca e retorna 200
-    if (!isValidCNPJ(num)) {
-      await upsertCustomerMetafield(customer.id, "cnpj", num);
-      await upsertCustomerMetafield(customer.id, "cnpj_status", "invalid");
-      return res.json({
-        ok: true,
-        autoApproved: false,
-        validated: false,
-        reason: "invalid_checksum"
-      });
-    }
-
-    // Valida e (se ATIVA) aprova
-    await upsertCustomerMetafield(customer.id, "cnpj", num);
-    await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
     const { approved, result } = await validateAndMaybeApprove(customer, num);
 
     res.json({
       ok: true,
       autoApproved: approved,
-      validated: true,
       provider: result.provider,
       found: result.found,
       active: result.active,
