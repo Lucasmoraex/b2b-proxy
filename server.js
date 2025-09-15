@@ -344,7 +344,7 @@ app.get("/validate-login", async (req, res) => {
   }
 });
 
-/* ======== Public: registrar CNPJ (agora valida e aprova se ATIVA) ======== */
+/* ======== Public: registrar CNPJ (sempre grava; DV inválido = invalid) ======== */
 app.post("/register-cnpj", async (req, res) => {
   res.set({
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -358,7 +358,8 @@ app.post("/register-cnpj", async (req, res) => {
     const mail = String(email || "").trim().toLowerCase();
     const num = onlyDigits(cnpj || "");
 
-    if (!mail || num.length !== 14 || !isValidCNPJ(num)) {
+    // só barra parâmetros totalmente ruins
+    if (!mail || num.length !== 14) {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
@@ -368,9 +369,8 @@ app.post("/register-cnpj", async (req, res) => {
       return res.status(404).json({ ok: false, error: "customer_not_found" });
     }
 
-    // Grava metafields básicos
+    // Sempre grava o CNPJ informado
     await upsertCustomerMetafield(customer.id, "cnpj", num);
-    await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
 
     // Garante tag de pendência
     const tags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
@@ -379,11 +379,24 @@ app.post("/register-cnpj", async (req, res) => {
       await setCustomerTags(customer.id, tags);
     }
 
-    // NOVO: valida no ReceitaWS e (se ATIVA) aprova automaticamente
+    // Se DV inválido, marca como invalid e retorna 200
+    if (!isValidCNPJ(num)) {
+      await upsertCustomerMetafield(customer.id, "cnpj_status", "invalid");
+      return res.json({
+        ok: true,
+        saved: true,
+        validated: false,
+        reason: "invalid_checksum"
+      });
+    }
+
+    // DV OK → pendente, valida no ReceitaWS e (se ATIVA) aprova automaticamente
+    await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
     const { approved, result } = await validateAndMaybeApprove(customer, num);
 
-    res.json({
+    return res.json({
       ok: true,
+      saved: true,
       validated: true,
       autoApproved: approved,
       provider: result.provider,
@@ -412,19 +425,34 @@ app.post("/validate-cnpj", async (req, res) => {
     const mail = String(email || "").trim().toLowerCase();
     const num = onlyDigits(cnpj || "");
 
-    if (!mail || num.length !== 14 || !isValidCNPJ(num)) {
+    if (!mail || num.length !== 14) {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
     const customer = await findCustomerByEmail(mail);
     if (!customer) return res.status(404).json({ ok: false, error: "customer_not_found" });
 
+    // Se DV inválido, só marca e retorna 200
+    if (!isValidCNPJ(num)) {
+      await upsertCustomerMetafield(customer.id, "cnpj", num);
+      await upsertCustomerMetafield(customer.id, "cnpj_status", "invalid");
+      return res.json({
+        ok: true,
+        autoApproved: false,
+        validated: false,
+        reason: "invalid_checksum"
+      });
+    }
+
     // Valida e (se ATIVA) aprova
+    await upsertCustomerMetafield(customer.id, "cnpj", num);
+    await upsertCustomerMetafield(customer.id, "cnpj_status", "pending");
     const { approved, result } = await validateAndMaybeApprove(customer, num);
 
     res.json({
       ok: true,
       autoApproved: approved,
+      validated: true,
       provider: result.provider,
       found: result.found,
       active: result.active,
