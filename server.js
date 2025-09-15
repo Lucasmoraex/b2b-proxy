@@ -11,7 +11,6 @@ const SHOP  = process.env.SHOPIFY_SHOP || "elementsparaempresas.myshopify.com";
 const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN || "";
 
 // Agora aceitamos várias origens, separadas por vírgula.
-// Ex.: B2B_ALLOWED_ORIGIN="https://corporativo.elements.com.br,https://elementsparaempresas.myshopify.com"
 const ORIGINS_ENV =
   process.env.B2B_ALLOWED_ORIGIN ||
   "https://corporativo.elements.com.br,https://elementsparaempresas.myshopify.com";
@@ -19,21 +18,20 @@ const ORIGINS_ENV =
 const ADMIN_SECRET = process.env.B2B_ADMIN_SECRET || ""; // secret para rotas /admin/*
 
 // ===== ReceitaWS (somente ele) =====
-const RECEITAWS_TOKEN = process.env.B2B_RECEITAWS_TOKEN || ""; // coloque via ENV (não exponha no front)
+const RECEITAWS_TOKEN = process.env.B2B_RECEITAWS_TOKEN || ""; // via ENV
 const RECEITAWS_BASE  = (process.env.B2B_RECEITAWS_BASE || "https://www.receitaws.com.br/v1").replace(/\/$/, "");
 // "query" ( .../cnpj/XYZ?token=XXX ) ou "bearer" (Authorization: Bearer XXX)
 const RECEITAWS_TOKEN_MODE = (process.env.B2B_RECEITAWS_TOKEN_MODE || "bearer").toLowerCase();
 
 // Auto-approve quando ReceitaWS retornar empresa ATIVA
-const AUTO_APPROVE =
-  String(process.env.B2B_AUTO_APPROVE || "true").toLowerCase() === "true";
+const AUTO_APPROVE = String(process.env.B2B_AUTO_APPROVE || "true").toLowerCase() === "true";
 
 // Cache TTL para consultas de CNPJ (ms)
 const CNPJ_CACHE_TTL_MS = Number(process.env.B2B_CNPJ_CACHE_TTL_MS || 1000 * 60 * 60 * 24); // 24h
 /* ====================== */
 
 app.set("trust proxy", 1);
-app.set("etag", false); // evita 304/ETag
+app.set("etag", false);
 
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 app.use(express.json());
@@ -42,13 +40,13 @@ app.use(express.json());
 const ALLOWED_ORIGINS = ORIGINS_ENV.split(",").map(s => s.trim()).filter(Boolean);
 
 function isAllowedOrigin(origin) {
-  if (!origin) return true; // requests sem Origin (ex.: curl) – libera
+  if (!origin) return true; // requests sem Origin (ex.: curl)
   try {
     const { hostname } = new URL(origin);
-    if (ALLOWED_ORIGINS.includes(origin)) return true; // lista explícita
-    if (hostname.endsWith(".myshopify.com")) return true; // vitrine / preview
-    if (hostname.endsWith(".shopifypreview.com")) return true; // preview
-    if (hostname === "admin.shopify.com") return true; // editor do tema
+    if (ALLOWED_ORIGINS.includes(origin)) return true;
+    if (hostname.endsWith(".myshopify.com")) return true;
+    if (hostname.endsWith(".shopifypreview.com")) return true;
+    if (hostname === "admin.shopify.com") return true;
   } catch {}
   return false;
 }
@@ -62,7 +60,6 @@ app.use(
   })
 );
 
-// responde preflight para tudo
 app.options("*", (req, res) => {
   if (!isAllowedOrigin(req.headers.origin || "")) return res.sendStatus(403);
   res.set("Access-Control-Allow-Origin", req.headers.origin || "*");
@@ -86,11 +83,7 @@ const api = async (path, opts = {}) => {
     console.error("REST API error:", res.status, text.slice(0, 400));
     throw new Error(`${res.status} ${text}`);
   }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return {};
-  }
+  try { return JSON.parse(text); } catch { return {}; }
 };
 
 const onlyDigits = (s = "") => s.replace(/\D/g, "").slice(0, 14);
@@ -100,7 +93,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function isValidCNPJ(v) {
   const c = onlyDigits(v);
   if (c.length !== 14) return false;
-  if (/^(\d)\1{13}$/.test(c)) return false; // todos iguais
+  if (/^(\d)\1{13}$/.test(c)) return false;
   const calc = (base) => {
     let sum = 0, factor = base.length - 7;
     for (let i = 0; i < base.length; i++) {
@@ -146,7 +139,6 @@ async function fetchCnpjReceitaWS(cnpj) {
   const res = await fetch(url, { headers /* , signal: AbortSignal.timeout(12000) */ });
   const json = await res.json().catch(() => ({}));
 
-  // Formato clássico
   if (json && json.status === "OK") {
     const result = {
       provider: "receitaws",
@@ -162,14 +154,12 @@ async function fetchCnpjReceitaWS(cnpj) {
     return result;
   }
 
-  // Alguns planos não trazem "status"
   if (json && (json.nome || json.razao || json.razao_social)) {
     const result = {
       provider: "receitaws",
       found: true,
       active: String(json.situacao || json.situacao_cadastral || "")
-        .toUpperCase()
-        .includes("ATIV"),
+        .toUpperCase().includes("ATIV"),
       razao: json.nome || json.razao || json.razao_social || "",
       fantasia: json.fantasia || json.nome_fantasia || "",
       abertura: json.abertura || json.data_abertura || "",
@@ -216,6 +206,11 @@ async function setCustomerTags(customerId, tagsArray) {
   });
 }
 
+/**
+ * Upsert de metafield:
+ * - Cria com `type` informado.
+ * - Ao atualizar, NÃO envia `type` e força o valor no formato aceito por `existing.type`.
+ */
 async function upsertCustomerMetafield(
   customerId,
   key,
@@ -225,15 +220,37 @@ async function upsertCustomerMetafield(
 ) {
   const metas = await api(`/customers/${customerId}/metafields.json?namespace=${namespace}`);
   const existing = (metas.metafields || []).find(
-    (m) => String(m.key).toLowerCase() === String(key).toLowerCase()
+    (m) => String(m.key || "").toLowerCase() === String(key).toLowerCase()
   );
 
+  // Função para coerção de valor com base no tipo
+  const coerce = (t, v) => {
+    const tnorm = String(t || "").toLowerCase();
+    if (tnorm === "boolean") {
+      // Shopify espera "true"/"false" como string
+      return String(v === true || v === "true" || v === 1 || v === "1");
+    }
+    if (tnorm === "number_integer" || tnorm === "number_decimal") {
+      const s = String(v).replace(",", ".");
+      return s;
+    }
+    if (tnorm === "date_time") {
+      try { return new Date(v).toISOString(); } catch { return new Date().toISOString(); }
+    }
+    // default: trata como string simples
+    return String(v == null ? "" : v);
+  };
+
   if (existing) {
+    // Atualiza respeitando o tipo existente
+    const coerced = coerce(existing.type, value);
     await api(`/metafields/${existing.id}.json`, {
       method: "PUT",
-      body: { metafield: { id: existing.id, value, type } },
+      body: { metafield: { id: existing.id, value: coerced } }, // sem "type" no update
     });
   } else {
+    // Cria com o tipo especificado
+    const coerced = coerce(type, value);
     await api(`/metafields.json`, {
       method: "POST",
       body: {
@@ -243,7 +260,7 @@ async function upsertCustomerMetafield(
           owner_id: customerId,
           owner_resource: "customer",
           type,
-          value,
+          value: coerced,
         },
       },
     });
@@ -256,20 +273,16 @@ async function validateAndMaybeApprove(customer, cnpjNum) {
   const result = await fetchCnpjReceitaWS(num);
 
   // Metacampos informativos
-  await upsertCustomerMetafield(customer.id, "cnpj_exists", String(!!result.found), "boolean");
+  await upsertCustomerMetafield(customer.id, "cnpj_exists", !!result.found, "boolean");
   await upsertCustomerMetafield(
     customer.id,
     "cnpj_situacao",
-    result.active ? "ATIVA" : "INATIVA"
+    result.active ? "ATIVA" : "INATIVA",
+    "single_line_text_field"
   );
-  if (result.razao) await upsertCustomerMetafield(customer.id, "cnpj_razao", result.razao);
+  if (result.razao)    await upsertCustomerMetafield(customer.id, "cnpj_razao", result.razao);
   if (result.fantasia) await upsertCustomerMetafield(customer.id, "cnpj_fantasia", result.fantasia);
-  await upsertCustomerMetafield(
-    customer.id,
-    "cnpj_checked_at",
-    new Date().toISOString(),
-    "date_time"
-  );
+  await upsertCustomerMetafield(customer.id, "cnpj_checked_at", new Date().toISOString(), "date_time");
 
   // Auto-approve se encontrado e ATIVA
   let approved = false;
@@ -332,8 +345,7 @@ app.get("/validate-login", async (req, res) => {
     const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
     const hasApprovedTag = (customer.tags || "")
-      .split(",")
-      .map((t) => t.trim())
+      .split(",").map((t) => t.trim())
       .includes("b2b-approved");
     const approved = hasApprovedTag && cnpj_status === "approved";
 
