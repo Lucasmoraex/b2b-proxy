@@ -553,6 +553,46 @@ app.post("/validate-cnpj", async (req, res) => {
   }
 });
 
+/* ======== Public: pré-validação de CNPJ (NÃO toca Shopify) ======== */
+      app.post("/precheck-cnpj", async (req, res) => {
+        const label = "POST /precheck-cnpj";
+        try {
+          req.__id = req.__id || `${Date.now()}`;
+          console.log(`[START] ${label} reqId=${req.__id}`);
+          res.set({
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+            "Vary": "Origin",
+          });
+
+          const { cnpj } = req.body || {};
+          const num = onlyDigits(cnpj || "");
+          console.log(`[PCHECK] cnpj=${num ? "************" + num.slice(-4) : "(empty)"}`);
+
+          // dígitos/estrutura inválidos → já retorna como não encontrado/inativo
+          if (!num || num.length !== 14 || !isValidCNPJ(num)) {
+            console.warn("[PCHECK] invalid_digits");
+            return res.json({ ok: true, found: false, active: false, reason: "invalid_digits" });
+          }
+
+          // consulta ReceitaWS, sem mexer em Shopify
+          const result = await fetchCnpjReceitaWS(num);
+          console.log(`[PCHECK] found=${result.found} active=${result.active} razao="${result.razao || ""}"`);
+
+          return res.json({
+            ok: true,
+            found: !!result.found,
+            active: !!result.active,
+            razao: result.razao || null,
+            fantasia: result.fantasia || null,
+          });
+        } catch (e) {
+          console.error("precheck-cnpj error:", e);
+          return res.status(500).json({ ok: false, error: "internal_error" });
+        }
+      });
+
 /* ======== Admin: aprovar / reprovar ======== */
 app.post("/admin/approve", async (req, res) => {
   logStart(req, "POST /admin/approve");
