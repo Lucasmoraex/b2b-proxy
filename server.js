@@ -26,6 +26,10 @@ const AUTO_APPROVE =
 
 // Cache TTL para consultas de CNPJ (ms)
 const CNPJ_CACHE_TTL_MS = Number(process.env.B2B_CNPJ_CACHE_TTL_MS || 1000 * 60 * 60 * 24); // 24h
+
+// Espera pelo cliente após criação na vitrine (configurável)
+const WAIT_RETRIES  = Number(process.env.B2B_WAIT_RETRIES || 20);
+const WAIT_DELAY_MS = Number(process.env.B2B_WAIT_DELAY_MS || 1000);
 /* ====================== */
 
 /* ======== Helpers de log ======== */
@@ -243,7 +247,7 @@ async function findCustomerByEmail(email, req) {
   return found;
 }
 
-async function waitForCustomerByEmail(email, retries = 8, delayMs = 800, req) {
+async function waitForCustomerByEmail(email, retries = WAIT_RETRIES, delayMs = WAIT_DELAY_MS, req) {
   for (let i = 0; i < retries; i++) {
     const c = await findCustomerByEmail(email, req);
     if (c) return c;
@@ -451,7 +455,7 @@ app.post("/register-cnpj", async (req, res) => {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
-    const customer = await waitForCustomerByEmail(mail, 10, 700, req);
+    const customer = await waitForCustomerByEmail(mail, WAIT_RETRIES, WAIT_DELAY_MS, req);
     if (!customer) {
       logWarn(req, "register-cnpj customer_not_found (timeout)");
       logEnd(req, 404, "customer_not_found");
