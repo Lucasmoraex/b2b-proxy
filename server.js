@@ -30,7 +30,6 @@ const CNPJ_CACHE_TTL_MS = Number(process.env.B2B_CNPJ_CACHE_TTL_MS || 1000 * 60 
 
 /* ======== Helpers de log ======== */
 function rid() {
-  // request id simples p/ logs
   return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-6);
 }
 function nowMS() { return Date.now(); }
@@ -397,6 +396,39 @@ app.get("/validate-login", async (req, res) => {
   }
 });
 
+/* ======== Public: PRECHECK de CNPJ (não mexe no Shopify) ======== */
+app.post("/precheck-cnpj", async (req, res) => {
+  res.set({
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+    "Vary": "Origin",
+  });
+
+  try {
+    const { cnpj } = req.body || {};
+    const num = onlyDigits(cnpj || "");
+
+    logInfo(req, "precheck-cnpj payload", { cnpj_tail: num.slice(-4), len: num.length });
+
+    if (num.length !== 14 || !isValidCNPJ(num)) {
+      logWarn(req, "precheck-cnpj invalid_params");
+      logEnd(req, 400, "invalid_params");
+      return res.status(400).json({ ok: false, error: "invalid_params" });
+    }
+
+    const result = await fetchCnpjReceitaWS(num, req);
+    const payload = { ok: true, found: !!result.found, active: !!result.active };
+    logInfo(req, "precheck-cnpj response", payload);
+    logEnd(req, 200);
+    res.json(payload);
+  } catch (e) {
+    logErr(req, "precheck-cnpj error", e);
+    logEnd(req, 500);
+    res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
 /* ======== Public: registrar CNPJ ======== */
 app.post("/register-cnpj", async (req, res) => {
   res.set({
@@ -419,8 +451,6 @@ app.post("/register-cnpj", async (req, res) => {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
-    // Espera o cliente “aparecer” — o front só vai chamar isto antes de criar o cliente se assim for programado;
-    // no teu fluxo atual, você chama DEPOIS do create, então normalmente ele já existe.
     const customer = await waitForCustomerByEmail(mail, 10, 700, req);
     if (!customer) {
       logWarn(req, "register-cnpj customer_not_found (timeout)");
@@ -440,7 +470,7 @@ app.post("/register-cnpj", async (req, res) => {
       await setCustomerTags(customer.id, tags, req);
     }
 
-    // Valida no ReceitaWS e aprova automaticamente se ATIVA
+    // Valida e aprova auto se ATIVA
     const { approved, result } = await validateAndMaybeApprove(customer, num, req);
 
     const payload = {
