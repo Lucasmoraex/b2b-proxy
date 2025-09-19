@@ -26,43 +26,27 @@ const AUTO_APPROVE =
 
 // Cache TTL para consultas de CNPJ (ms)
 const CNPJ_CACHE_TTL_MS = Number(process.env.B2B_CNPJ_CACHE_TTL_MS || 1000 * 60 * 60 * 24); // 24h
-
-// Espera pelo cliente após criação na vitrine (configurável)
-const WAIT_RETRIES  = Number(process.env.B2B_WAIT_RETRIES || 20);
-const WAIT_DELAY_MS = Number(process.env.B2B_WAIT_DELAY_MS || 1000);
 /* ====================== */
 
 /* ======== Helpers de log ======== */
-function rid() {
-  return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-6);
-}
+function rid() { return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-6); }
 function nowMS() { return Date.now(); }
-function fmt(obj) {
-  try { return JSON.stringify(obj); } catch { return String(obj); }
-}
+function fmt(obj) { try { return JSON.stringify(obj); } catch { return String(obj); } }
 function logStart(req, tag = "START") {
   const id = rid();
-  req._reqId = id;
-  req._t0 = nowMS();
+  req._reqId = id; req._t0 = nowMS();
   const ip = req.headers["x-forwarded-for"] || req.ip || "";
   const ua = req.headers["user-agent"] || "";
   const origin = req.headers.origin || "";
   console.log(`[${tag}] ${req.method} ${req.path} reqId=${id} ip="${ip}" ua="${ua}" origin="${origin}" path="${req.originalUrl || req.url}"`);
 }
 function logEnd(req, statusCode, extra = "") {
-  const t1 = nowMS();
-  const elapsed = req._t0 ? (t1 - req._t0) : -1;
+  const elapsed = req._t0 ? (nowMS() - req._t0) : -1;
   console.log(`[END]   ${req.method} ${req.path} reqId=${req._reqId} elapsedMS=${elapsed} -> ${statusCode}${extra ? " " + extra : ""}`);
 }
-function logInfo(req, msg, obj) {
-  console.log(`[INFO]  reqId=${req._reqId} ${msg}${obj !== undefined ? " " + fmt(obj) : ""}`);
-}
-function logWarn(req, msg, obj) {
-  console.warn(`[WARN]  reqId=${req._reqId} ${msg}${obj !== undefined ? " " + fmt(obj) : ""}`);
-}
-function logErr(req, msg, err) {
-  console.error(`[ERROR] reqId=${req._reqId} ${msg}`, err && err.stack ? err.stack : err);
-}
+function logInfo(req, msg, obj) { console.log(`[INFO]  reqId=${req._reqId} ${msg}${obj !== undefined ? " " + fmt(obj) : ""}`); }
+function logWarn(req, msg, obj) { console.warn(`[WARN]  reqId=${req._reqId} ${msg}${obj !== undefined ? " " + fmt(obj) : ""}`); }
+function logErr(req, msg, err) { console.error(`[ERROR] reqId=${req._reqId} ${msg}`, err && err.stack ? err.stack : err); }
 
 /* ======== App / Middlewares ======== */
 app.set("trust proxy", 1);
@@ -73,9 +57,8 @@ app.use(express.json());
 
 // -------- CORS robusto --------
 const ALLOWED_ORIGINS = ORIGINS_ENV.split(",").map(s => s.trim()).filter(Boolean);
-
 function isAllowedOrigin(origin) {
-  if (!origin) return true; // requests sem Origin – libera
+  if (!origin) return true;
   try {
     const { hostname } = new URL(origin);
     if (ALLOWED_ORIGINS.includes(origin)) return true;
@@ -88,14 +71,12 @@ function isAllowedOrigin(origin) {
 
 app.use((req, _res, next) => { logStart(req); next(); });
 
-app.use(
-  cors({
-    origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "X-B2B-Admin-Secret"],
-    credentials: false,
-  })
-);
+app.use(cors({
+  origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "X-B2B-Admin-Secret"],
+  credentials: false,
+}));
 
 app.options("*", (req, res) => {
   if (!isAllowedOrigin(req.headers.origin || "")) {
@@ -115,10 +96,7 @@ const api = async (path, opts = {}, req = null) => {
   if (req) logInfo(req, "Shopify REST ->", { path, method: opts.method || "GET" });
   const res = await fetch(`https://${SHOP}/admin/api/2024-07${path}`, {
     method: opts.method || "GET",
-    headers: {
-      "X-Shopify-Access-Token": TOKEN,
-      "Content-Type": "application/json",
-    },
+    headers: { "X-Shopify-Access-Token": TOKEN, "Content-Type": "application/json" },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const text = await res.text();
@@ -172,7 +150,7 @@ function saveToCache(cnpj, data) {
   cnpjCache.set(onlyDigits(cnpj), { exp: Date.now() + CNPJ_CACHE_TTL_MS, data });
 }
 
-/* ======== ReceitaWS (único provedor) ======== */
+/* ======== ReceitaWS ======== */
 async function fetchCnpjReceitaWS(cnpj, req) {
   const num = onlyDigits(cnpj);
   const cached = getFromCache(num);
@@ -184,11 +162,8 @@ async function fetchCnpjReceitaWS(cnpj, req) {
   let url = `${RECEITAWS_BASE}/cnpj/${num}`;
   const headers = {};
   if (RECEITAWS_TOKEN) {
-    if (RECEITAWS_TOKEN_MODE === "bearer") {
-      headers["Authorization"] = `Bearer ${RECEITAWS_TOKEN}`;
-    } else {
-      url += (url.includes("?") ? "&" : "?") + `token=${encodeURIComponent(RECEITAWS_TOKEN)}`;
-    }
+    if (RECEITAWS_TOKEN_MODE === "bearer") headers["Authorization"] = `Bearer ${RECEITAWS_TOKEN}`;
+    else url += (url.includes("?") ? "&" : "?") + `token=${encodeURIComponent(RECEITAWS_TOKEN)}`;
   }
 
   logInfo(req, "ReceitaWS ->", { url: url.replace(/\/cnpj\/\d+/, "/cnpj/************") });
@@ -226,18 +201,12 @@ async function fetchCnpjReceitaWS(cnpj, req) {
     return result;
   }
 
-  const notFound = {
-    provider: "receitaws",
-    found: false,
-    active: false,
-    err: (json && (json.message || json.error || json.status)) || "not_found",
-    raw: json,
-  };
+  const notFound = { provider: "receitaws", found: false, active: false, err: (json && (json.message || json.error || json.status)) || "not_found", raw: json };
   saveToCache(num, notFound);
   return notFound;
 }
 
-/* ======== Helpers de cliente/metafield/tags ======== */
+/* ======== Helpers Shopify ======== */
 async function findCustomerByEmail(email, req) {
   logInfo(req, "findCustomerByEmail", { email });
   const q = encodeURIComponent(`email:${email}`);
@@ -247,7 +216,7 @@ async function findCustomerByEmail(email, req) {
   return found;
 }
 
-async function waitForCustomerByEmail(email, retries = WAIT_RETRIES, delayMs = WAIT_DELAY_MS, req) {
+async function waitForCustomerByEmail(email, retries = 8, delayMs = 800, req) {
   for (let i = 0; i < retries; i++) {
     const c = await findCustomerByEmail(email, req);
     if (c) return c;
@@ -258,49 +227,28 @@ async function waitForCustomerByEmail(email, retries = WAIT_RETRIES, delayMs = W
 }
 
 async function setCustomerTags(customerId, tagsArray, req) {
-  const tags = [...new Set(tagsArray.map((t) => t.trim()).filter(Boolean))].join(", ");
+  const tags = [...new Set(tagsArray.map(t => t.trim()).filter(Boolean))].join(", ");
   logInfo(req, "setCustomerTags ->", { customerId, tags });
   await api(`/customers/${customerId}.json`, { method: "PUT", body: { customer: { id: customerId, tags } } }, req);
 }
 
-async function upsertCustomerMetafield(
-  customerId,
-  key,
-  value,
-  type = "single_line_text_field",
-  namespace = "custom",
-  req
-) {
+async function upsertCustomerMetafield(customerId, key, value, type = "single_line_text_field", namespace = "custom", req) {
   logInfo(req, "upsert metafield ->", { customerId, namespace, key, value, type });
   const metas = await api(`/customers/${customerId}/metafields.json?namespace=${namespace}`, {}, req);
-  const existing = (metas.metafields || []).find(
-    (m) => String(m.key).toLowerCase() === String(key).toLowerCase()
-  );
+  const existing = (metas.metafields || []).find(m => String(m.key).toLowerCase() === String(key).toLowerCase());
 
   if (existing) {
-    await api(`/metafields/${existing.id}.json`, {
-      method: "PUT",
-      body: { metafield: { id: existing.id, value, type } },
-    }, req);
+    await api(`/metafields/${existing.id}.json`, { method: "PUT", body: { metafield: { id: existing.id, value, type } } }, req);
   } else {
     await api(`/metafields.json`, {
       method: "POST",
-      body: {
-        metafield: {
-          namespace,
-          key,
-          owner_id: customerId,
-          owner_resource: "customer",
-          type,
-          value,
-        },
-      },
+      body: { metafield: { namespace, key, owner_id: customerId, owner_resource: "customer", type, value } },
     }, req);
   }
   logInfo(req, "upsert metafield <- OK", { key });
 }
 
-/* ======== Helper: validar no ReceitaWS e aprovar se ATIVA ======== */
+/* ======== Validar e aprovar se ATIVA ======== */
 async function validateAndMaybeApprove(customer, cnpjNum, req) {
   const num = onlyDigits(cnpjNum);
   const result = await fetchCnpjReceitaWS(num, req);
@@ -314,9 +262,9 @@ async function validateAndMaybeApprove(customer, cnpjNum, req) {
   let approved = false;
   if (AUTO_APPROVE && result.found && result.active) {
     logInfo(req, "auto-approve ON", { found: result.found, active: result.active });
-    const currentTags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+    const currentTags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
-    const tags = currentTags.filter((t) => t !== "b2b-pending");
+    const tags = currentTags.filter(t => t !== "b2b-pending");
     await setCustomerTags(customer.id, tags, req);
     await upsertCustomerMetafield(customer.id, "cnpj_status", "approved", "single_line_text_field", "custom", req);
     approved = true;
@@ -327,30 +275,16 @@ async function validateAndMaybeApprove(customer, cnpjNum, req) {
   return { approved, result };
 }
 
-/* ======== Guard das rotas admin ======== */
-function hasSecret(req) {
-  const header = req.header("X-B2B-Admin-Secret");
-  const qp = req.query.secret;
-  return ADMIN_SECRET && (header === ADMIN_SECRET || qp === ADMIN_SECRET);
-}
+/* ======== Guard admin ======== */
+function hasSecret(req) { const header = req.header("X-B2B-Admin-Secret"); const qp = req.query.secret; return ADMIN_SECRET && (header === ADMIN_SECRET || qp === ADMIN_SECRET); }
 function guard(req, res) {
-  if (!hasSecret(req)) {
-    logWarn(req, "admin unauthorized");
-    res.status(401).json({ ok: false, error: "unauthorized" });
-    return false;
-  }
+  if (!hasSecret(req)) { logWarn(req, "admin unauthorized"); res.status(401).json({ ok: false, error: "unauthorized" }); return false; }
   return true;
 }
 
 /* ======== Public: validação de login ======== */
 app.get("/validate-login", async (req, res) => {
-  res.set({
-    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-    "Surrogate-Control": "no-store",
-    "Vary": "Origin",
-  });
+  res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Surrogate-Control": "no-store", "Vary": "Origin" });
 
   try {
     const email = String(req.query.email || "").trim().toLowerCase();
@@ -358,35 +292,20 @@ app.get("/validate-login", async (req, res) => {
 
     logInfo(req, "validate-login payload", { email, cnpj_len: cnpj.length });
 
-    if (!email || cnpj.length !== 14) {
-      logWarn(req, "validate-login invalid params");
-      logEnd(req, 400);
-      return res.status(400).json({ ok: false, exists: false });
-    }
+    if (!email || cnpj.length !== 14) { logWarn(req, "validate-login invalid params"); logEnd(req, 400); return res.status(400).json({ ok: false, exists: false }); }
 
     const customer = await findCustomerByEmail(email, req);
-    if (!customer) {
-      logInfo(req, "validate-login no customer");
-      logEnd(req, 200);
-      return res.json({ ok: true, exists: false });
-    }
+    if (!customer) { logInfo(req, "validate-login no customer"); logEnd(req, 200); return res.json({ ok: true, exists: false }); }
 
     const metas = await api(`/customers/${customer.id}/metafields.json?namespace=custom`, {}, req);
-    const mfCnpjField = (metas.metafields || []).find(
-      (m) => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj"
-    );
-    const mfStatusField = (metas.metafields || []).find(
-      (m) => m.key?.toLowerCase() === "cnpj_status"
-    );
+    const mfCnpjField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj" || m.key?.toLowerCase() === "cjnpj");
+    const mfStatusField = (metas.metafields || []).find(m => m.key?.toLowerCase() === "cnpj_status");
 
     const mfCnpj = mfCnpjField ? String(mfCnpjField.value || "") : "";
     const cnpj_status = (mfStatusField ? String(mfStatusField.value || "") : "").toLowerCase();
     const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
-    const hasApprovedTag = (customer.tags || "")
-      .split(",")
-      .map((t) => t.trim())
-      .includes("b2b-approved");
+    const hasApprovedTag = (customer.tags || "").split(",").map(t => t.trim()).includes("b2b-approved");
     const approved = hasApprovedTag && cnpj_status === "approved";
 
     const payload = { ok: true, exists: true, cnpj_match, approved, cnpj_status };
@@ -400,14 +319,9 @@ app.get("/validate-login", async (req, res) => {
   }
 });
 
-/* ======== Public: PRECHECK de CNPJ (não mexe no Shopify) ======== */
+/* ======== Public: PRECHECK (não mexe no Shopify) ======== */
 app.post("/precheck-cnpj", async (req, res) => {
-  res.set({
-    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-    "Vary": "Origin",
-  });
+  res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Vary": "Origin" });
 
   try {
     const { cnpj } = req.body || {};
@@ -433,14 +347,9 @@ app.post("/precheck-cnpj", async (req, res) => {
   }
 });
 
-/* ======== Public: registrar CNPJ ======== */
+/* ======== Public: registrar CNPJ (grava/aprova após criação do cliente) ======== */
 app.post("/register-cnpj", async (req, res) => {
-  res.set({
-    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-    "Vary": "Origin",
-  });
+  res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Vary": "Origin" });
 
   try {
     const { email, cnpj } = req.body || {};
@@ -455,7 +364,8 @@ app.post("/register-cnpj", async (req, res) => {
       return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
-    const customer = await waitForCustomerByEmail(mail, WAIT_RETRIES, WAIT_DELAY_MS, req);
+    // cliente precisa existir (acabou de ser criado pela Shopify)
+    const customer = await waitForCustomerByEmail(mail, 10, 700, req);
     if (!customer) {
       logWarn(req, "register-cnpj customer_not_found (timeout)");
       logEnd(req, 404, "customer_not_found");
@@ -468,13 +378,13 @@ app.post("/register-cnpj", async (req, res) => {
     await upsertCustomerMetafield(customer.id, "cnpj_status", "pending", "single_line_text_field", "custom", req);
 
     // Tag pendência
-    const tags = (customer.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+    const tags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!tags.includes("b2b-pending")) {
       tags.push("b2b-pending");
       await setCustomerTags(customer.id, tags, req);
     }
 
-    // Valida e aprova auto se ATIVA
+    // Valida e, se ATIVA, aprova e aplica b2b-approved
     const { approved, result } = await validateAndMaybeApprove(customer, num, req);
 
     const payload = {
@@ -499,12 +409,7 @@ app.post("/register-cnpj", async (req, res) => {
 
 /* ======== Public: validar CNPJ isoladamente ======== */
 app.post("/validate-cnpj", async (req, res) => {
-  res.set({
-    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-    "Vary": "Origin",
-  });
+  res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Vary": "Origin" });
 
   try {
     const { email, cnpj } = req.body || {};
@@ -558,9 +463,9 @@ app.post("/admin/approve", async (req, res) => {
     const c = await findCustomerByEmail(email, req);
     if (!c) { logInfo(req, "admin/approve not found"); logEnd(req, 200); return res.json({ ok: true, found: false }); }
 
-    const currentTags = (c.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+    const currentTags = (c.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
-    const tags = currentTags.filter((t) => t !== "b2b-pending");
+    const tags = currentTags.filter(t => t !== "b2b-pending");
 
     await setCustomerTags(c.id, tags, req);
     await upsertCustomerMetafield(c.id, "cnpj_status", "approved", "single_line_text_field", "custom", req);
@@ -587,8 +492,8 @@ app.post("/admin/reject", async (req, res) => {
     const c = await findCustomerByEmail(email, req);
     if (!c) { logInfo(req, "admin/reject not found"); logEnd(req, 200); return res.json({ ok: true, found: false }); }
 
-    const currentTags = (c.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
-    const tags = currentTags.filter((t) => t !== "b2b-approved");
+    const currentTags = (c.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    const tags = currentTags.filter(t => t !== "b2b-approved");
 
     await setCustomerTags(c.id, tags, req);
     await upsertCustomerMetafield(c.id, "cnpj_status", "rejected", "single_line_text_field", "custom", req);
