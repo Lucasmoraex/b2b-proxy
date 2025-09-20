@@ -261,13 +261,19 @@ async function validateAndMaybeApprove(customer, cnpjNum, req) {
 
   let approved = false;
   if (AUTO_APPROVE && result.found && result.active) {
-    logInfo(req, "auto-approve ON", { found: result.found, active: result.active });
-    const currentTags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    // Recarrega o cliente para ter o estado mais recente das tags
+    const fresh = await findCustomerByEmail(String(customer.email || "").toLowerCase(), req) || customer;
+
+    const currentTags = (fresh.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
     const tags = currentTags.filter(t => t !== "b2b-pending");
-    await setCustomerTags(customer.id, tags, req);
-    await upsertCustomerMetafield(customer.id, "cnpj_status", "approved", "single_line_text_field", "custom", req);
+
+    logInfo(req, "auto-approve ON -> set tags", { id: fresh.id, tags });
+    await setCustomerTags(fresh.id, tags, req);
+    await upsertCustomerMetafield(fresh.id, "cnpj_status", "approved", "single_line_text_field", "custom", req);
+
     approved = true;
+    logInfo(req, "auto-approve DONE", { id: fresh.id });
   } else {
     logInfo(req, "not auto-approved", { found: result.found, active: result.active, AUTO_APPROVE });
   }
