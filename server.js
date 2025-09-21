@@ -253,27 +253,28 @@ async function validateAndMaybeApprove(customer, cnpjNum, req) {
   const num = onlyDigits(cnpjNum);
   const result = await fetchCnpjReceitaWS(num, req);
 
+  // Informativos
   await upsertCustomerMetafield(customer.id, "cnpj_exists", String(!!result.found), "boolean", "custom", req);
   await upsertCustomerMetafield(customer.id, "cnpj_situacao", result.active ? "ATIVA" : "INATIVA", "single_line_text_field", "custom", req);
   if (result.razao)    await upsertCustomerMetafield(customer.id, "cnpj_razao", result.razao, "single_line_text_field", "custom", req);
   if (result.fantasia) await upsertCustomerMetafield(customer.id, "cnpj_fantasia", result.fantasia, "single_line_text_field", "custom", req);
   await upsertCustomerMetafield(customer.id, "cnpj_checked_at", new Date().toISOString(), "date_time", "custom", req);
 
+  // Aprovação automática se ATIVA
   let approved = false;
   if (AUTO_APPROVE && result.found && result.active) {
-    // Recarrega o cliente para ter o estado mais recente das tags
-    const fresh = await findCustomerByEmail(String(customer.email || "").toLowerCase(), req) || customer;
+    logInfo(req, "auto-approve ON", { found: result.found, active: result.active });
 
-    const currentTags = (fresh.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    // Garante que o CNPJ correto esteja salvo
+    await upsertCustomerMetafield(customer.id, "cnpj", num, "single_line_text_field", "custom", req);
+
+    const currentTags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
     const tags = currentTags.filter(t => t !== "b2b-pending");
+    await setCustomerTags(customer.id, tags, req);
 
-    logInfo(req, "auto-approve ON -> set tags", { id: fresh.id, tags });
-    await setCustomerTags(fresh.id, tags, req);
-    await upsertCustomerMetafield(fresh.id, "cnpj_status", "approved", "single_line_text_field", "custom", req);
-
+    await upsertCustomerMetafield(customer.id, "cnpj_status", "approved", "single_line_text_field", "custom", req);
     approved = true;
-    logInfo(req, "auto-approve DONE", { id: fresh.id });
   } else {
     logInfo(req, "not auto-approved", { found: result.found, active: result.active, AUTO_APPROVE });
   }
@@ -312,7 +313,8 @@ app.get("/validate-login", async (req, res) => {
     const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
     const hasApprovedTag = (customer.tags || "").split(",").map(t => t.trim()).includes("b2b-approved");
-    const approved = hasApprovedTag && cnpj_status === "approved";
+    // ✅ aprovado se tiver TAG **ou** o metafield já estiver "approved"
+    const approved = hasApprovedTag || cnpj_status === "approved";
 
     const payload = { ok: true, exists: true, cnpj_match, approved, cnpj_status };
     logInfo(req, "validate-login response", payload);
