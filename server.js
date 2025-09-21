@@ -216,6 +216,14 @@ async function findCustomerByEmail(email, req) {
   return found;
 }
 
+async function getCustomerById(id, req) {
+  logInfo(req, "getCustomerById", { id });
+  const json = await api(`/customers/${id}.json`, {}, req);
+  const c = json && json.customer ? json.customer : null;
+  logInfo(req, "getCustomerById result", { found: !!c, id: c?.id });
+  return c;
+}
+
 async function waitForCustomerByEmail(email, retries = 8, delayMs = 800, req) {
   for (let i = 0; i < retries; i++) {
     const c = await findCustomerByEmail(email, req);
@@ -253,29 +261,27 @@ async function validateAndMaybeApprove(customer, cnpjNum, req) {
   const num = onlyDigits(cnpjNum);
   const result = await fetchCnpjReceitaWS(num, req);
 
-  // Informativos
   await upsertCustomerMetafield(customer.id, "cnpj_exists", String(!!result.found), "boolean", "custom", req);
   await upsertCustomerMetafield(customer.id, "cnpj_situacao", result.active ? "ATIVA" : "INATIVA", "single_line_text_field", "custom", req);
   if (result.razao)    await upsertCustomerMetafield(customer.id, "cnpj_razao", result.razao, "single_line_text_field", "custom", req);
   if (result.fantasia) await upsertCustomerMetafield(customer.id, "cnpj_fantasia", result.fantasia, "single_line_text_field", "custom", req);
   await upsertCustomerMetafield(customer.id, "cnpj_checked_at", new Date().toISOString(), "date_time", "custom", req);
 
-  // Aprovação automática se ATIVA
   let approved = false;
   if (AUTO_APPROVE && result.found && result.active) {
     logInfo(req, "auto-approve ON", { found: result.found, active: result.active });
-
-    // Garante que o CNPJ correto esteja salvo
-    await upsertCustomerMetafield(customer.id, "cnpj", num, "single_line_text_field", "custom", req);
-
     const currentTags = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     if (!currentTags.includes("b2b-approved")) currentTags.push("b2b-approved");
     const tags = currentTags.filter(t => t !== "b2b-pending");
     await setCustomerTags(customer.id, tags, req);
-
     await upsertCustomerMetafield(customer.id, "cnpj_status", "approved", "single_line_text_field", "custom", req);
     approved = true;
   } else {
+    // Remover b2b-approved por segurança e manter pendente
+    const current = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
+    const tags = current.filter(t => t !== "b2b-approved");
+    await setCustomerTags(customer.id, tags, req);
+    await upsertCustomerMetafield(customer.id, "cnpj_status", "pending", "single_line_text_field", "custom", req);
     logInfo(req, "not auto-approved", { found: result.found, active: result.active, AUTO_APPROVE });
   }
 
@@ -313,8 +319,7 @@ app.get("/validate-login", async (req, res) => {
     const cnpj_match = onlyDigits(mfCnpj) === cnpj;
 
     const hasApprovedTag = (customer.tags || "").split(",").map(t => t.trim()).includes("b2b-approved");
-    // ✅ aprovado se tiver TAG **ou** o metafield já estiver "approved"
-    const approved = hasApprovedTag || cnpj_status === "approved";
+    const approved = hasApprovedTag && cnpj_status === "approved";
 
     const payload = { ok: true, exists: true, cnpj_match, approved, cnpj_status };
     logInfo(req, "validate-login response", payload);
@@ -457,6 +462,78 @@ app.post("/validate-cnpj", async (req, res) => {
     logErr(req, "validate-cnpj error", e);
     logEnd(req, 500);
     res.status(500).json({ ok: false, error: "internal_error" });
+  }
+});
+
+/* ======== Flow: pós-criação do cliente ======== */
+app.post("/flow/after-customer-created", async (req, res) => {
+  if (!hasSecret(req)) {
+    logWarn(req, "flow/after-customer-created unauthorized");
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
+
+  try {
+    const body = req.body || {};
+    const idFromBody = body.customer_id ? Number(body.customer_id) : null;
+    const emailFromBody = String(body.email || "").trim().toLowerCase();
+    const cnpjFromBody  = String(body.cnpj || "");
+
+    logInfo(req, "flow/after-customer-created payload", {
+      customer_id: idFromBody || null,
+      email: emailFromBody || null,
+      cnpj_tail: (cnpjFromBody || "").replace(/\D/g, "").slice(-4) || null
+    });
+
+    // 1) Resolve cliente por ID (preferência) ou por email
+    let customer = null;
+    if (idFromBody) {
+      customer = await getCustomerById(idFromBody, req);
+    }
+    if (!customer && emailFromBody) {
+      customer = await findCustomerByEmail(emailFromBody, req);
+    }
+    if (!customer) {
+      logWarn(req, "flow: customer_not_found");
+      return res.status(404).json({ ok: false, error: "customer_not_found" });
+    }
+
+    // 2) Ler metafield custom.cnpj se body não trouxe/estiver vazio
+    let num = (cnpjFromBody || "").replace(/\D/g, "").slice(0, 14);
+    if (!num || num.length !== 14) {
+      const metas = await api(`/customers/${customer.id}/metafields.json?namespace=custom`, {}, req);
+      const mfCnpjField = (metas.metafields || []).find(
+        (m) => String(m.key || "").toLowerCase() === "cnpj"
+      );
+      if (mfCnpjField && mfCnpjField.value) {
+        num = String(mfCnpjField.value).replace(/\D/g, "").slice(0, 14);
+      }
+    }
+
+    if (!num || num.length !== 14 || !isValidCNPJ(num)) {
+      logWarn(req, "flow: invalid or missing CNPJ");
+      // mantém pendente
+      await upsertCustomerMetafield(customer.id, "cnpj_status", "pending", "single_line_text_field", "custom", req);
+      return res.status(400).json({ ok: false, error: "invalid_cnpj" });
+    }
+
+    // 3) Grava/garante o metafield CNPJ antes de validar
+    await upsertCustomerMetafield(customer.id, "cnpj", num, "single_line_text_field", "custom", req);
+
+    // 4) Valida e aprova se ATIVA (isso também seta cnpj_status, tags, informativos)
+    const { approved, result } = await validateAndMaybeApprove(customer, num, req);
+
+    // 5) Se NÃO aprovado, já garantimos pending e sem b2b-approved dentro de validateAndMaybeApprove
+    const payload = {
+      ok: true,
+      approved,
+      found: !!result.found,
+      active: !!result.active
+    };
+    logInfo(req, "flow/after-customer-created response", payload);
+    return res.json(payload);
+  } catch (e) {
+    logErr(req, "flow/after-customer-created error", e);
+    return res.status(500).json({ ok: false, error: "internal_error" });
   }
 });
 
