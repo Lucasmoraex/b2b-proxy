@@ -256,6 +256,18 @@ async function upsertCustomerMetafield(customerId, key, value, type = "single_li
   logInfo(req, "upsert metafield <- OK", { key });
 }
 
+/* ======== NOVO: garante que o CNPJ esteja gravado ======== */
+async function ensureCnpjMetafield(customerId, num, req) {
+  const metas = await api(`/customers/${customerId}/metafields.json?namespace=custom`, {}, req);
+  const mf = (metas.metafields || []).find(m => String(m.key).toLowerCase() === "cnpj");
+  const current = mf ? String(mf.value || "") : "";
+  if (onlyDigits(current) !== onlyDigits(num)) {
+    await upsertCustomerMetafield(customerId, "cnpj", num, "single_line_text_field", "custom", req);
+    // se nunca setou, deixa pending até a validação mudar para approved
+    await upsertCustomerMetafield(customerId, "cnpj_status", "pending", "single_line_text_field", "custom", req);
+  }
+}
+
 /* ======== Validar e aprovar se ATIVA ======== */
 async function validateAndMaybeApprove(customer, cnpjNum, req) {
   const num = onlyDigits(cnpjNum);
@@ -277,7 +289,6 @@ async function validateAndMaybeApprove(customer, cnpjNum, req) {
     await upsertCustomerMetafield(customer.id, "cnpj_status", "approved", "single_line_text_field", "custom", req);
     approved = true;
   } else {
-    // Remover b2b-approved por segurança e manter pendente
     const current = (customer.tags || "").split(",").map(t => t.trim()).filter(Boolean);
     const tags = current.filter(t => t !== "b2b-approved");
     await setCustomerTags(customer.id, tags, req);
@@ -420,7 +431,7 @@ app.post("/register-cnpj", async (req, res) => {
   }
 });
 
-/* ======== Public: validar CNPJ isoladamente ======== */
+/* ======== Public: validar CNPJ isoladamente (AGORA GARANTE CNPJ) ======== */
 app.post("/validate-cnpj", async (req, res) => {
   res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Vary": "Origin" });
 
@@ -443,6 +454,9 @@ app.post("/validate-cnpj", async (req, res) => {
       logEnd(req, 404, "customer_not_found");
       return res.status(404).json({ ok: false, error: "customer_not_found" });
     }
+
+    // <<< NOVO: garante que o metafield custom.cnpj esteja persistido
+    await ensureCnpjMetafield(customer.id, num, req);
 
     const { approved, result } = await validateAndMaybeApprove(customer, num, req);
 
@@ -522,7 +536,6 @@ app.post("/flow/after-customer-created", async (req, res) => {
     // 4) Valida e aprova se ATIVA (isso também seta cnpj_status, tags, informativos)
     const { approved, result } = await validateAndMaybeApprove(customer, num, req);
 
-    // 5) Se NÃO aprovado, já garantimos pending e sem b2b-approved dentro de validateAndMaybeApprove
     const payload = {
       ok: true,
       approved,
