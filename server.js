@@ -24,6 +24,9 @@ const RECEITAWS_TOKEN_MODE = (process.env.B2B_RECEITAWS_TOKEN_MODE || "bearer").
 const AUTO_APPROVE =
   String(process.env.B2B_AUTO_APPROVE || "true").toLowerCase() === "true";
 
+const REQUIRE_PHONE =
+  String(process.env.B2B_REQUIRE_PHONE || "false").toLowerCase() === "true";
+
 // Cache TTL para consultas de CNPJ (ms)
 const CNPJ_CACHE_TTL_MS = Number(process.env.B2B_CNPJ_CACHE_TTL_MS || 1000 * 60 * 60 * 24); // 24h
 /* ====================== */
@@ -117,6 +120,7 @@ const api = async (path, opts = {}, req = null) => {
 
 const onlyDigits = (s = "") => s.replace(/\D/g, "").slice(0, 14);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const onlyPhoneDigits = (s = "") => String(s).replace(/\D/g, "").slice(0, 13);
 
 /* ======== Validador rápido de CNPJ ======== */
 function isValidCNPJ(v) {
@@ -135,6 +139,11 @@ function isValidCNPJ(v) {
   const d1 = calc(c.slice(0, 12));
   const d2 = calc(c.slice(0, 12) + d1);
   return c.endsWith(`${d1}${d2}`);
+}
+
+function isValidPhone(v) {
+  const phone = onlyPhoneDigits(v);
+  return phone.length >= 10 && phone.length <= 13;
 }
 
 /* ======== Cache simples em memória ======== */
@@ -238,6 +247,11 @@ async function setCustomerTags(customerId, tagsArray, req) {
   const tags = [...new Set(tagsArray.map(t => t.trim()).filter(Boolean))].join(", ");
   logInfo(req, "setCustomerTags ->", { customerId, tags });
   await api(`/customers/${customerId}.json`, { method: "PUT", body: { customer: { id: customerId, tags } } }, req);
+}
+
+async function setCustomerPhone(customerId, phone, req) {
+  logInfo(req, "setCustomerPhone ->", { customerId, phone_len: phone.length });
+  await api(`/customers/${customerId}.json`, { method: "PUT", body: { customer: { id: customerId, phone } } }, req);
 }
 
 async function upsertCustomerMetafield(customerId, key, value, type = "single_line_text_field", namespace = "custom", req) {
@@ -376,16 +390,31 @@ app.post("/register-cnpj", async (req, res) => {
   res.set({ "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache", "Expires": "0", "Vary": "Origin" });
 
   try {
-    const { email, cnpj } = req.body || {};
+    const { email, cnpj, phone } = req.body || {};
     const mail = String(email || "").trim().toLowerCase();
     const num  = onlyDigits(cnpj || "");
+    const phoneNum = onlyPhoneDigits(phone || "");
+    const hasPhone = phone !== undefined && phone !== null && String(phone).trim() !== "";
+    const phoneValid = isValidPhone(phoneNum);
 
-    logInfo(req, "register-cnpj payload", { email: maskEmail(mail), cnpj_tail: num.slice(-4), len: num.length });
+    logInfo(req, "register-cnpj payload", {
+      email: maskEmail(mail),
+      cnpj_tail: num.slice(-4),
+      len: num.length,
+      has_phone: hasPhone,
+      phone_len: phoneNum.length,
+    });
 
     if (!mail || num.length !== 14 || !isValidCNPJ(num)) {
       logWarn(req, "register-cnpj invalid_params");
       logEnd(req, 400, "invalid_params");
       return res.status(400).json({ ok: false, error: "invalid_params" });
+    }
+
+    if (REQUIRE_PHONE && !phoneValid) {
+      logWarn(req, "register-cnpj invalid_phone");
+      logEnd(req, 400, "invalid_phone");
+      return res.status(400).json({ ok: false, error: "invalid_phone" });
     }
 
     // cliente precisa existir (acabou de ser criado pela Shopify)
@@ -396,6 +425,13 @@ app.post("/register-cnpj", async (req, res) => {
       return res.status(404).json({ ok: false, error: "customer_not_found" });
     }
     logInfo(req, "register-cnpj found customer", { id: customer.id });
+
+    if (phoneValid) {
+      const currentPhone = onlyPhoneDigits(customer.phone || "");
+      if (currentPhone !== phoneNum) {
+        await setCustomerPhone(customer.id, phoneNum, req);
+      }
+    }
 
     // Metafields básicos
     await upsertCustomerMetafield(customer.id, "cnpj", num, "single_line_text_field", "custom", req);
@@ -511,7 +547,7 @@ app.post("/flow/after-customer-created", async (req, res) => {
       return res.status(404).json({ ok: false, error: "customer_not_found" });
     }
 
-    // 2) Ler metafield custom.cnpj se body não trouxe/estiver vazio
+    // 2) Ler metafield custom.cnpj se body não trouxer/estiver vazio
     let num = (cnpjFromBody || "").replace(/\D/g, "").slice(0, 14);
     if (!num || num.length !== 14) {
       const metas = await api(`/customers/${customer.id}/metafields.json?namespace=custom`, {}, req);
@@ -579,7 +615,6 @@ app.post("/admin/approve", async (req, res) => {
   }
 });
 app.get("/admin/approve", (req, res) => app._router.handle({ ...req, method: "POST" }, res));
-
 app.post("/admin/reject", async (req, res) => {
   if (!guard(req, res)) return;
   try {
