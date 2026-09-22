@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: b2b_local
+      POSTGRES_USER: b2b_local
+      POSTGRES_PASSWORD: b2b_local_password
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U b2b_local -d b2b_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - b2b_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  b2b_postgres_data:
