@@ -5,17 +5,38 @@ import { fetchWithTimeout } from "./http.js";
 const customerGid = (id) => String(id).startsWith("gid://") ? String(id) : `gid://shopify/Customer/${id}`;
 
 export class ShopifyGraphqlClient {
-  constructor({ fetchImpl, shop, token, apiVersion, timeoutMs = 8000 }) {
+  constructor({ fetchImpl, shop, token = "", clientId = "", clientSecret = "", apiVersion, timeoutMs = 8000, clock = () => new Date() }) {
     this.fetchImpl = fetchImpl;
-    this.url = `https://${shop}/admin/api/${apiVersion}/graphql.json`;
+    this.shopHost = shop.includes(".") ? shop : `${shop}.myshopify.com`;
+    this.url = `https://${this.shopHost}/admin/api/${apiVersion}/graphql.json`;
     this.token = token;
+    this.clientId = clientId;
+    this.clientSecret = clientSecret;
     this.timeoutMs = timeoutMs;
+    this.clock = clock;
+    this.cachedToken = null;
+    this.tokenExpiresAt = 0;
+  }
+
+  async accessToken() {
+    if (this.token) return this.token;
+    if (this.cachedToken && this.clock().getTime() < this.tokenExpiresAt - 60_000) return this.cachedToken;
+    const body = new URLSearchParams({ grant_type: "client_credentials", client_id: this.clientId, client_secret: this.clientSecret });
+    const response = await fetchWithTimeout(this.fetchImpl, `https://${this.shopHost}/admin/oauth/access_token`, {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body,
+    }, this.timeoutMs, "shopify");
+    if (!response.ok) throw new ExternalServiceError("shopify", "shopify_unavailable");
+    const payload = await response.json().catch(() => null);
+    if (!payload?.access_token || !Number.isFinite(payload.expires_in)) throw new ExternalServiceError("shopify", "shopify_unavailable");
+    this.cachedToken = payload.access_token;
+    this.tokenExpiresAt = this.clock().getTime() + payload.expires_in * 1000;
+    return this.cachedToken;
   }
 
   async execute(query, variables) {
     const response = await fetchWithTimeout(this.fetchImpl, this.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": this.token },
+      headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": await this.accessToken() },
       body: JSON.stringify({ query, variables }),
     }, this.timeoutMs, "shopify");
     if (!response.ok) throw new ExternalServiceError("shopify", "shopify_unavailable");
@@ -73,6 +94,17 @@ export class ShopifyGraphqlClient {
     return (data.customers?.nodes || []).find((customer) => {
       try { return normalizeEmail(customer.email) === normalized; } catch { return false; }
     }) || null;
+  }
+
+  async createCustomersCreateWebhook(callbackUrl) {
+    const data = await this.execute(`mutation CreateCustomersWebhook($topic: WebhookSubscriptionTopic!, $subscription: WebhookSubscriptionInput!) {
+      webhookSubscriptionCreate(topic: $topic, webhookSubscription: $subscription) {
+        webhookSubscription { id topic uri }
+        userErrors { field message }
+      }
+    }`, { topic: "CUSTOMERS_CREATE", subscription: { uri: callbackUrl } });
+    ShopifyGraphqlClient.assertNoUserErrors(data.webhookSubscriptionCreate);
+    return data.webhookSubscriptionCreate.webhookSubscription;
   }
 }
 

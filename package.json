@@ -12,9 +12,11 @@
     "start": "node server.js",
     "worker": "node src/worker-main.js",
     "migrate": "node scripts/migrate.js",
+    "shopify:webhook:register": "node scripts/register-shopify-webhook.js",
+    "simulation:webhook:fixture": "node scripts/generate-simulated-webhook.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage test/*.test.js",
-    "check": "node --check server.js && node --check src/app.js && node --check src/worker.js"
+    "check": "node --check server.js && node --check src/app.js && node --check src/worker.js && node --check scripts/register-shopify-webhook.js && node --check scripts/generate-simulated-webhook.js"
   },
   "devDependencies": {
     "supertest": "^7.1.4"

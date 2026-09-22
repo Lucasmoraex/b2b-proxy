@@ -1,6 +1,6 @@
-import { buildRuntime } from "./runtime.js";
+import { buildWorkerRuntime } from "./runtime.js";
 
-const runtime = buildRuntime();
+const runtime = buildWorkerRuntime();
 let stopping = false;
 
 const stop = () => { stopping = true; };

@@ -8,6 +8,7 @@ export class MemoryRegistrationStore {
     this.registrations = new Map();
     this.webhooks = new Map();
     this.outbox = new Map();
+    this.simulationCustomers = new Map();
     this.lock = Promise.resolve();
   }
 
@@ -148,5 +149,25 @@ export class MemoryRegistrationStore {
   }
 
   async getRegistration(id) { return this.clone(this.registrations.get(id) || null); }
+  simulationCustomer(customerId) {
+    if (!this.simulationCustomers.has(customerId)) this.simulationCustomers.set(customerId, { id: customerId, phone: null, tags: [], metafields: { nodes: [] } });
+    return this.simulationCustomers.get(customerId);
+  }
+  async setSimulationPhone(customerId, phone) { this.simulationCustomer(customerId).phone = phone; }
+  async setSimulationMetafields(customerId, fields) {
+    const customer = this.simulationCustomer(customerId);
+    const current = new Map(customer.metafields.nodes.map((field) => [field.key, field]));
+    for (const field of fields) current.set(field.key, { key: field.key, value: String(field.value), type: field.type });
+    customer.metafields.nodes = [...current.values()];
+  }
+  async addSimulationTags(customerId, tags) {
+    const customer = this.simulationCustomer(customerId);
+    customer.tags = [...new Set([...customer.tags, ...tags])];
+  }
+  async removeSimulationTags(customerId, tags) {
+    const customer = this.simulationCustomer(customerId);
+    customer.tags = customer.tags.filter((tag) => !tags.includes(tag));
+  }
+  async getSimulationCustomer(customerId) { return this.clone(this.simulationCustomers.get(customerId) || null); }
   async close() {}
 }

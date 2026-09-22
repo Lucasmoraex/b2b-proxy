@@ -14,8 +14,10 @@ test("PostgreSQL enforces concurrent uniqueness in an isolated schema", { skip: 
   await admin.query(`CREATE SCHEMA "${schema}"`);
   const pool = new pg.Pool({ connectionString: testDatabaseUrl, options: `-c search_path=${schema}` });
   try {
-    const migration = await fs.readFile(new URL("../migrations/001_secure_registrations.sql", import.meta.url), "utf8");
-    await pool.query(migration);
+    for (const migrationName of ["001_secure_registrations.sql", "002_simulation_shopify_state.sql"]) {
+      const migration = await fs.readFile(new URL(`../migrations/${migrationName}`, import.meta.url), "utf8");
+      await pool.query(migration);
+    }
     const store = new PostgresRegistrationStore({ pool });
     const now = new Date("2030-01-01T00:00:00.000Z");
     const base = {

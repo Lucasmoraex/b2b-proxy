@@ -43,16 +43,24 @@ npm run check
 
 Para incluir a suíte PostgreSQL, configure `TEST_DATABASE_URL` para um banco exclusivamente de testes. A suíte cria e remove somente um schema aleatório próprio.
 
+O checklist completo de staging no Render, integração com uma única development store e execução do simulador está em [`docs/STAGING.md`](docs/STAGING.md).
+
 ## Variáveis
 
-Consulte `.env.example`. Obrigatórias para a aplicação completa:
+Consulte `.env.example` e `docs/STAGING.md`. Compartilhadas pelo Web e Worker:
 
 - `DATABASE_URL`
-- `SHOPIFY_SHOP`
-- `SHOPIFY_ADMIN_TOKEN`
+
+Obrigatórias no Web:
+
 - `SHOPIFY_WEBHOOK_SECRET`
 - `B2B_ADMIN_SECRET`
 - `B2B_REGISTRATION_TOKEN_SECRET`
+
+Obrigatórias no Worker real:
+
+- `SHOPIFY_SHOP`
+- `SHOPIFY_CLIENT_ID` e `SHOPIFY_CLIENT_SECRET` (recomendado para store da mesma organização); ou `SHOPIFY_ADMIN_TOKEN` legado
 
 Configuração adicional:
 
@@ -71,6 +79,10 @@ Configuração adicional:
 - `B2B_RATE_LIMIT_MAX`
 - `B2B_WORKER_POLL_MS`
 - `B2B_WORKER_MAX_ATTEMPTS`
+- `B2B_ENVIRONMENT`
+- `B2B_SIMULATION_MODE`
+- `B2B_SIMULATION_CONFIRMATION`
+- `B2B_SIMULATED_REGISTRY_SCENARIO`
 - `PORT`
 
 ## `POST /v1/registrations`
@@ -158,12 +170,12 @@ Retorna somente `registration_id`, `status` e `expires_at`; não retorna PII. O 
 ```http
 POST /webhooks/shopify/customers-create
 X-Shopify-Hmac-Sha256: <HMAC base64 do corpo bruto>
-X-Shopify-Event-Id: <id único>
+X-Shopify-Webhook-Id: <id único da entrega>
 X-Shopify-Topic: customers/create
 X-Shopify-Shop-Domain: store-name.example.invalid
 ```
 
-O HMAC SHA-256 é calculado sobre o corpo bruto e comparado em tempo constante. A idempotência usa `X-Shopify-Event-Id`. Caso esse header não esteja presente, a chave determinística é `topic + shop domain + customer id`; para `customers/create`, o customer ID torna essa chave estável.
+O HMAC SHA-256 é calculado sobre o corpo bruto e comparado em tempo constante. A idempotência prioriza `X-Shopify-Webhook-Id`; `X-Shopify-Event-Id` é aceito como compatibilidade. Caso ambos faltem, a chave determinística é `topic + shop domain + customer id`; para `customers/create`, o customer ID torna essa chave estável.
 
 Resposta `202`:
 

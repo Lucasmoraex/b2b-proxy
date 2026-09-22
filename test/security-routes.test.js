@@ -38,6 +38,26 @@ test("Shopify email search rejects a different returned email", async () => {
   assert.equal(await client.findCustomerByExactEmail("expected@example.invalid"), null);
 });
 
+test("Shopify client credentials are exchanged once and cached", async () => {
+  let tokenCalls = 0; let graphqlCalls = 0;
+  const fetchImpl = async (url) => {
+    if (url.endsWith("/admin/oauth/access_token")) {
+      tokenCalls += 1;
+      return { ok: true, async json() { return { access_token: "synthetic-short-lived-token", expires_in: 86399 }; } };
+    }
+    graphqlCalls += 1;
+    return { ok: true, async json() { return { data: { customer: { id: "gid://shopify/Customer/synthetic" } } }; } };
+  };
+  const client = new ShopifyGraphqlClient({
+    fetchImpl, shop: "development-shop", clientId: "synthetic-id", clientSecret: "synthetic-secret",
+    apiVersion: "2026-07", timeoutMs: 50, clock: () => new Date("2030-01-01T00:00:00Z"),
+  });
+  await client.getCustomerState("synthetic");
+  await client.getCustomerState("synthetic");
+  assert.equal(tokenCalls, 1);
+  assert.equal(graphqlCalls, 2);
+});
+
 test("administrative routes require a header secret and reject query secrets", async () => {
   const ctx = makeTestContext();
   const without = await request(ctx.app).post("/admin/approve").send({ registration_id: newKey() });
@@ -98,12 +118,14 @@ test("webhook is idempotent, handles no reservation, and binds exact customer id
   const hmac = crypto.createHmac("sha256", ctx.config.shopifyWebhookSecret).update(payload).digest("base64");
   const send = () => request(ctx.app).post("/webhooks/shopify/customers-create")
     .set("Content-Type", "application/json").set("X-Shopify-Hmac-Sha256", hmac)
-    .set("X-Shopify-Event-Id", "synthetic-event-1").send(payload.toString("utf8"));
+    .set("X-Shopify-Webhook-Id", "synthetic-delivery-1").set("X-Shopify-Event-Id", "synthetic-event-1").send(payload.toString("utf8"));
   const noReservation = await send();
   assert.equal(noReservation.status, 202);
   assert.equal(noReservation.body.matched, false);
   const duplicate = await send();
   assert.equal(duplicate.body.duplicate, true);
+  assert.equal(ctx.store.webhooks.has("synthetic-delivery-1"), true);
+  assert.equal(ctx.store.webhooks.has("synthetic-event-1"), false);
 
   const registration = await request(ctx.app).post("/v1/registrations").set("Idempotency-Key", newKey()).send(defaultPayload({ email: "second@example.invalid" }));
   const secondPayload = Buffer.from(JSON.stringify({ id: "customer-opaque-2", email: "SECOND@example.invalid" }));

@@ -10,11 +10,17 @@ const int = (value, fallback) => {
 
 export function loadConfig(env = process.env) {
   return {
+    environment: env.B2B_ENVIRONMENT || "production",
+    nodeEnv: env.NODE_ENV || "production",
+    isRender: String(env.RENDER || "").toLowerCase() === "true",
+    renderServiceName: env.RENDER_SERVICE_NAME || "",
     port: int(env.PORT, 3000),
     databaseUrl: env.DATABASE_URL || "",
     databaseSsl: bool(env.DATABASE_SSL, false),
     shop: env.SHOPIFY_SHOP || "",
     shopifyToken: env.SHOPIFY_ADMIN_TOKEN || "",
+    shopifyClientId: env.SHOPIFY_CLIENT_ID || "",
+    shopifyClientSecret: env.SHOPIFY_CLIENT_SECRET || "",
     shopifyApiVersion: env.SHOPIFY_API_VERSION || "2026-07",
     shopifyWebhookSecret: env.SHOPIFY_WEBHOOK_SECRET || "",
     adminSecret: env.B2B_ADMIN_SECRET || "",
@@ -32,5 +38,8 @@ export function loadConfig(env = process.env) {
     rateLimitMax: int(env.B2B_RATE_LIMIT_MAX, 30),
     workerPollMs: int(env.B2B_WORKER_POLL_MS, 2000),
     workerMaxAttempts: int(env.B2B_WORKER_MAX_ATTEMPTS, 8),
+    simulationMode: bool(env.B2B_SIMULATION_MODE, false),
+    simulationConfirmation: env.B2B_SIMULATION_CONFIRMATION || "",
+    simulatedRegistryScenario: env.B2B_SIMULATED_REGISTRY_SCENARIO || "active",
   };
 }

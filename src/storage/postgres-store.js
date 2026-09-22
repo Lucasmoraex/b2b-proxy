@@ -178,5 +178,41 @@ export class PostgresRegistrationStore {
     return mapRow(result.rows[0]);
   }
 
+  async setSimulationPhone(customerId, phone) {
+    await this.pool.query(`INSERT INTO simulation_shopify_customers (customer_id, phone_e164)
+      VALUES ($1,$2) ON CONFLICT (customer_id) DO UPDATE SET phone_e164=EXCLUDED.phone_e164, updated_at=now()`, [customerId, phone]);
+  }
+
+  async setSimulationMetafields(customerId, fields) {
+    const values = Object.fromEntries(fields.map((field) => [field.key, { value: String(field.value), type: field.type }]));
+    await this.pool.query(`INSERT INTO simulation_shopify_customers (customer_id, metafields)
+      VALUES ($1,$2::jsonb) ON CONFLICT (customer_id) DO UPDATE
+      SET metafields=simulation_shopify_customers.metafields || EXCLUDED.metafields, updated_at=now()`, [customerId, JSON.stringify(values)]);
+  }
+
+  async addSimulationTags(customerId, tags) {
+    await this.pool.query(`INSERT INTO simulation_shopify_customers (customer_id, tags)
+      VALUES ($1,$2::text[]) ON CONFLICT (customer_id) DO UPDATE
+      SET tags=ARRAY(SELECT DISTINCT unnest(simulation_shopify_customers.tags || EXCLUDED.tags)), updated_at=now()`, [customerId, tags]);
+  }
+
+  async removeSimulationTags(customerId, tags) {
+    await this.pool.query(`INSERT INTO simulation_shopify_customers (customer_id) VALUES ($1)
+      ON CONFLICT (customer_id) DO UPDATE SET
+      tags=ARRAY(SELECT tag FROM unnest(simulation_shopify_customers.tags) AS tag WHERE NOT (tag = ANY($2::text[]))), updated_at=now()`, [customerId, tags]);
+  }
+
+  async getSimulationCustomer(customerId) {
+    const result = await this.pool.query("SELECT * FROM simulation_shopify_customers WHERE customer_id=$1", [customerId]);
+    const row = result.rows[0];
+    if (!row) return null;
+    return {
+      id: row.customer_id,
+      phone: row.phone_e164,
+      tags: row.tags,
+      metafields: { nodes: Object.entries(row.metafields).map(([key, field]) => ({ key, ...field })) },
+    };
+  }
+
   async close() { await this.pool.end(); }
 }

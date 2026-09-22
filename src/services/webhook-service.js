@@ -9,7 +9,7 @@ export class WebhookService {
     this.clock = clock;
   }
 
-  async customersCreate({ rawBody, hmac, eventIdHeader, topicHeader, shopHeader }) {
+  async customersCreate({ rawBody, hmac, webhookIdHeader, eventIdHeader, topicHeader, shopHeader }) {
     if (!verifyShopifyHmac(rawBody, hmac, this.webhookSecret)) throw new AppError("unauthorized", 401);
     let payload;
     try { payload = JSON.parse(rawBody.toString("utf8")); } catch { throw new AppError("invalid_payload", 400); }
@@ -18,7 +18,7 @@ export class WebhookService {
     if (!customerId || customerId.length > 128) throw new AppError("invalid_payload", 400);
     const topic = String(topicHeader || "customers/create").slice(0, 100);
     const payloadDigest = digest(rawBody);
-    const eventId = String(eventIdHeader || `${topic}:${shopHeader || "unknown"}:${customerId}`).slice(0, 255);
+    const eventId = String(webhookIdHeader || eventIdHeader || `${topic}:${shopHeader || "unknown"}:${customerId}`).slice(0, 255);
     return this.store.associateWebhook({ eventId, topic, payloadDigest, email, customerId, now: this.clock() });
   }
 }

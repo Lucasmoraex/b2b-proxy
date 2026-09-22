@@ -1,6 +1,6 @@
-import { buildRuntime } from "./src/runtime.js";
+import { buildWebRuntime } from "./src/runtime.js";
 
-const runtime = buildRuntime();
+const runtime = buildWebRuntime();
 
 const server = runtime.app.listen(runtime.config.port, () => {
   runtime.logger.info("server_started", { port: runtime.config.port });

@@ -11,7 +11,7 @@ import { WebhookService } from "./services/webhook-service.js";
 const errorBody = (code) => ({ ok: false, error: { code, message: "Request could not be completed." } });
 
 export function createApp(dependencies) {
-  const { config, store, registryClient, logger, clock = () => new Date(), legacyMutationHandler } = dependencies;
+  const { config, store, registryClient, logger, clock = () => new Date(), legacyMutationHandler, simulationController } = dependencies;
   const app = express();
   app.disable("x-powered-by");
   app.set("trust proxy", 1);
@@ -40,7 +40,7 @@ export function createApp(dependencies) {
       return callback(new AppError("origin_not_allowed", 403));
     },
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Idempotency-Key", "X-B2B-Admin-Secret", "X-Shopify-Hmac-Sha256", "X-Shopify-Event-Id", "X-Shopify-Topic", "X-Shopify-Shop-Domain"],
+    allowedHeaders: ["Content-Type", "Idempotency-Key", "X-B2B-Admin-Secret", "X-Shopify-Hmac-Sha256", "X-Shopify-Webhook-Id", "X-Shopify-Event-Id", "X-Shopify-Topic", "X-Shopify-Shop-Domain"],
     credentials: false,
   }));
 
@@ -58,6 +58,7 @@ export function createApp(dependencies) {
       const result = await webhookService.customersCreate({
         rawBody: req.body,
         hmac: req.get("X-Shopify-Hmac-Sha256"),
+        webhookIdHeader: req.get("X-Shopify-Webhook-Id"),
         eventIdHeader: req.get("X-Shopify-Event-Id"),
         topicHeader: req.get("X-Shopify-Topic"),
         shopHeader: req.get("X-Shopify-Shop-Domain"),
@@ -143,6 +144,27 @@ export function createApp(dependencies) {
       res.status(202).json({ ok: true, registration_id: id, queued: true });
     } catch (error) { next(error); }
   });
+
+  if (config.simulationMode) {
+    app.get("/admin/simulation", requireAdmin, (_req, res) => {
+      res.json({ ok: true, simulation: true, registry_scenario: simulationController.getRegistryScenario() });
+    });
+    app.post("/admin/simulation/registry", requireAdmin, (req, res, next) => {
+      try {
+        simulationController.setRegistryScenario(String(req.body?.scenario || ""));
+        res.json({ ok: true, registry_scenario: simulationController.getRegistryScenario() });
+      } catch (error) { next(new AppError("invalid_simulation_scenario", 422, { cause: error })); }
+    });
+    app.get("/admin/simulation/shopify/:customerId", requireAdmin, async (req, res, next) => {
+      try {
+        const customerId = String(req.params.customerId || "");
+        if (!customerId || customerId.length > 128) throw new AppError("invalid_target", 422);
+        const customer = await store.getSimulationCustomer(customerId);
+        if (!customer) throw new AppError("simulation_customer_not_found", 404);
+        res.json({ ok: true, customer });
+      } catch (error) { next(error); }
+    });
+  }
 
   app.use((_req, res) => res.status(404).json(errorBody("not_found")));
   app.use((error, req, res, _next) => {

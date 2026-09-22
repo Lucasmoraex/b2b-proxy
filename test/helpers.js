@@ -39,7 +39,11 @@ export function makeTestContext(options = {}) {
     enableLegacyMutations: false, enableLegacyLogin: false,
     ...options.config,
   };
-  const app = createApp({ config, store, registryClient, logger, clock, legacyMutationHandler: options.legacyMutationHandler });
+  const app = createApp({
+    config, store, registryClient, logger, clock,
+    legacyMutationHandler: options.legacyMutationHandler,
+    simulationController: options.simulationController,
+  });
   return { app, store, logger, lines, clock, setNow, config, registryClient, get registryCalls() { return registryCalls; } };
 }
 
