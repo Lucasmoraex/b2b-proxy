@@ -19,29 +19,59 @@ export function verifyShopifyHmac(rawBody, suppliedHmac, secret) {
   return supplied.length === expected.length && crypto.timingSafeEqual(supplied, expected);
 }
 
-export function digest(value) {
-  return crypto.createHash("sha256").update(value).digest("hex");
-}
-
 export function signRegistrationToken(registration, secret) {
   return crypto.createHmac("sha256", secret).update(`${registration.id}:${new Date(registration.expires_at).toISOString()}`).digest("base64url");
 }
 
-const SENSITIVE_KEY = /(email|cnpj|phone|secret|token|authorization|query|payload|body|metafield|value)/i;
-
-export function redact(value, seen = new WeakSet()) {
-  if (value === null || value === undefined) return value;
-  if (typeof value !== "object") return value;
-  if (seen.has(value)) return "[circular]";
-  seen.add(value);
-  if (Array.isArray(value)) return value.map((item) => redact(item, seen));
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, SENSITIVE_KEY.test(key) ? "[redacted]" : redact(item, seen)]));
+export function verifyRegistrationToken({ registration, suppliedToken, secret, now, clockToleranceMs = 0 }) {
+  if (!registration || typeof suppliedToken !== "string" || !suppliedToken || typeof secret !== "string" || !secret) return false;
+  const expiresAtMs = new Date(registration.expires_at).getTime();
+  const nowMs = now instanceof Date ? now.getTime() : Number.NaN;
+  if (!Number.isFinite(expiresAtMs) || !Number.isFinite(nowMs)
+    || !Number.isInteger(clockToleranceMs) || clockToleranceMs < 0) return false;
+  // The tolerance is fail-closed: tokens expire slightly early and never after expires_at.
+  if (nowMs + clockToleranceMs >= expiresAtMs) return false;
+  return timingSafeEqualText(suppliedToken, signRegistrationToken(registration, secret));
 }
 
-export function sanitizeError(error) {
-  return JSON.stringify({
-    name: String(error?.name || "Error").slice(0, 80),
-    code: String(error?.code || "operation_failed").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 80),
-    status: Number.isInteger(error?.status) ? error.status : undefined,
-  });
+const PERSISTED_ERROR_CODES = new Set([
+  "historical_identity_import_failed",
+  "historical_identity_index_unavailable",
+  "historical_identity_registration_conflict",
+  "missing_customer_binding",
+  "operation_failed",
+  "payload_purged",
+  "payload_unavailable",
+  "registration_not_ready",
+  "registry_unavailable",
+  "shopify_audit_pagination_failed",
+  "shopify_audit_query_failed",
+  "shopify_audit_unavailable",
+  "shopify_customer_not_found",
+  "shopify_operation_failed",
+  "shopify_unavailable",
+  "unknown_operation",
+]);
+
+const PERSISTED_ERROR_CATEGORIES = new Set([
+  "conflict", "historical_identity", "internal", "registry", "shopify", "validation",
+]);
+
+const inferErrorCategory = (code, fallback) => {
+  if (code.startsWith("shopify_")) return "shopify";
+  if (code.startsWith("registry_")) return "registry";
+  if (code.startsWith("historical_identity_")) return code.endsWith("conflict") ? "conflict" : "historical_identity";
+  if (code === "registration_not_ready") return "validation";
+  return PERSISTED_ERROR_CATEGORIES.has(fallback) ? fallback : "internal";
+};
+
+export function persistedErrorRecord(error, { defaultCategory = "internal" } = {}) {
+  const candidate = typeof error?.code === "string" ? error.code : "operation_failed";
+  const code = PERSISTED_ERROR_CODES.has(candidate) ? candidate : "operation_failed";
+  const category = inferErrorCategory(code, defaultCategory);
+  const upstreamStatus = Number.isInteger(error?.upstreamStatus)
+    && error.upstreamStatus >= 100 && error.upstreamStatus <= 599
+    ? error.upstreamStatus
+    : null;
+  return { code, category, upstreamStatus };
 }

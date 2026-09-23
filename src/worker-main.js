@@ -12,7 +12,7 @@ while (!stopping) {
     const worked = await runtime.worker.runOnce();
     if (!worked) await new Promise((resolve) => setTimeout(resolve, runtime.config.workerPollMs));
   } catch (error) {
-    runtime.logger.error("worker_loop_failed", { error });
+    runtime.logger.error("worker_loop_failed", { code: "operation_failed", category: "internal" });
     await new Promise((resolve) => setTimeout(resolve, runtime.config.workerPollMs));
   }
 }
