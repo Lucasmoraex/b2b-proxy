@@ -159,6 +159,31 @@ test("production CORS is exact and registration requires Origin", async () => {
   })).status, 201);
 });
 
+test("registration status preflight permits auth headers only for the configured origin", async () => {
+  const officialOrigin = "https://portal.example.invalid";
+  const production = makeTestContext({ config: {
+    environment: "production",
+    allowedOrigins: [officialOrigin],
+  } });
+  const preflight = (origin) => request(production.app)
+    .options(`/v1/registrations/${newKey()}`)
+    .set("Origin", origin)
+    .set("Access-Control-Request-Method", "GET")
+    .set("Access-Control-Request-Headers", "authorization");
+
+  const allowed = await preflight(officialOrigin);
+  assert.equal(allowed.status, 204);
+  assert.equal(allowed.headers["access-control-allow-origin"], officialOrigin);
+  const allowedHeaders = String(allowed.headers["access-control-allow-headers"] || "")
+    .toLowerCase().split(",").map((header) => header.trim());
+  assert.ok(allowedHeaders.includes("authorization"));
+  assert.ok(allowedHeaders.includes("x-b2b-registration-token"));
+
+  const blocked = await preflight("https://evil.example.invalid");
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.headers["access-control-allow-origin"], undefined);
+});
+
 test("localhost and shopifypreview origins are development-only", async () => {
   const development = makeTestContext({ config: { environment: "development", allowedOrigins: [] } });
   assert.equal((await post(development, {}, newKey(), { Origin: "http://localhost:9292" })).status, 422);

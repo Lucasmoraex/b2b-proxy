@@ -71,7 +71,18 @@ export function createApp(dependencies) {
       return callback(new AppError("origin_not_allowed", 403));
     },
     methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Idempotency-Key", "X-B2B-Admin-Secret", "X-Shopify-Hmac-Sha256", "X-Shopify-Webhook-Id", "X-Shopify-Event-Id", "X-Shopify-Topic", "X-Shopify-Shop-Domain"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-B2B-Registration-Token",
+      "Idempotency-Key",
+      "X-B2B-Admin-Secret",
+      "X-Shopify-Hmac-Sha256",
+      "X-Shopify-Webhook-Id",
+      "X-Shopify-Event-Id",
+      "X-Shopify-Topic",
+      "X-Shopify-Shop-Domain",
+    ],
     credentials: false,
   }));
 
