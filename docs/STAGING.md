@@ -87,6 +87,12 @@ Use valores aleatórios diferentes dos de produção. Nunca cole valores no Git,
 | `DATABASE_SSL` | `false` para a conexão privada descrita acima |
 | `B2B_ADMIN_SECRET` | secret aleatório exclusivo de staging |
 | `B2B_REGISTRATION_TOKEN_SECRET` | secret aleatório exclusivo de staging |
+| `B2B_REGISTRATION_TOKEN_CLOCK_TOLERANCE_MS` | `1000`; máximo aceito `5000`, sempre fail-closed |
+| `B2B_DATA_DIGEST_SECRET` | secret HMAC aleatório, mínimo de 32 bytes e diferente de todos os demais |
+| `B2B_DATA_DIGEST_VERSION` | `hmac-sha256-v1` |
+| `B2B_PII_ENCRYPTION_ACTIVE_KEY_VERSION` | versão ativa, por exemplo `staging-v1` |
+| `B2B_PII_ENCRYPTION_KEYS` | JSON com chave AES-256-GCM base64; deve ser o mesmo no Web e Worker |
+| `B2B_RATE_LIMIT_KEY_SECRET` | secret HMAC aleatório, exclusivo e diferente de todos os demais secrets |
 | `SHOPIFY_WEBHOOK_SECRET` | perfil real: secret que assina o webhook; simulação: secret exclusivo iniciado por `sim_` |
 | `B2B_ALLOWED_ORIGIN` | origem HTTPS exata do tema de teste; lista separada por vírgula se necessário |
 | `B2B_AUTO_APPROVE` | `false` |
@@ -94,8 +100,17 @@ Use valores aleatórios diferentes dos de produção. Nunca cole valores no Git,
 | `B2B_ENABLE_LEGACY_LOGIN` | `false` |
 | `B2B_REQUEST_TIMEOUT_MS` | por exemplo `8000` |
 | `B2B_RESERVATION_TTL_MS` | por exemplo `1800000` |
+| `B2B_FISCAL_CACHE_TTL_MS` | por exemplo `86400000`; cache desabilitado no modo simulado |
 | `B2B_RATE_LIMIT_WINDOW_MS` | por exemplo `60000` |
 | `B2B_RATE_LIMIT_MAX` | por exemplo `30` |
+| `B2B_TRUST_PROXY_HOPS` | `1` somente se houver exatamente um proxy confiável entre cliente e Web |
+| `B2B_SHARED_RATE_LIMIT_WINDOW_MS` | por exemplo `60000` |
+| `B2B_SHARED_RATE_LIMIT_MAX` | por exemplo `20` |
+| `B2B_IDENTITY_RATE_LIMIT_WINDOW_MS` | por exemplo `900000` |
+| `B2B_IDENTITY_RATE_LIMIT_MAX` | por exemplo `10` |
+| `B2B_ACTIVE_RESERVATIONS_PER_IP_MAX` | por exemplo `5` |
+| `B2B_RETENTION_ENABLED` | `false` |
+| `B2B_RETENTION_MODE` | `report-only` |
 
 ### Web — perfil de simulação isolada
 
@@ -122,7 +137,7 @@ Use valores aleatórios diferentes dos de produção. Nunca cole valores no Git,
 | `SHOPIFY_SHOP` | domínio exato `nome-da-development-store.myshopify.com` |
 | `B2B_RECEITAWS_BASE` | endpoint fiscal contratado |
 | `B2B_RECEITAWS_TOKEN` | token de staging, se exigido pelo provedor |
-| `B2B_RECEITAWS_TOKEN_MODE` | `bearer` ou o modo contratado |
+| `B2B_RECEITAWS_TOKEN_MODE` | `bearer`; use `none` somente com `B2B_RECEITAWS_TOKEN` vazio |
 
 Não configure `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_ID` nem `SHOPIFY_ADMIN_TOKEN` no Web. `SHOPIFY_WEBHOOK_SECRET` é suficiente para verificar entregas.
 
@@ -138,6 +153,8 @@ Não configure `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_ID` nem `SHOPIFY_ADMIN_T
 | `B2B_WORKER_POLL_MS` | por exemplo `2000` |
 | `B2B_WORKER_MAX_ATTEMPTS` | por exemplo `8` |
 | `B2B_REQUEST_TIMEOUT_MS` | por exemplo `8000` |
+| `B2B_PII_ENCRYPTION_ACTIVE_KEY_VERSION` | mesma versão configurada no Web |
+| `B2B_PII_ENCRYPTION_KEYS` | mesmo keyring configurado no Web |
 
 ### Worker — perfil de simulação isolada
 
@@ -322,13 +339,14 @@ SELECT id, shopify_customer_id, status, fiscal_status,
 FROM registrations
 WHERE id = '00000000-0000-4000-8000-000000000000';
 
-SELECT event_id, topic, payload_digest, processed_at
+SELECT event_id, topic, payload_digest_version, processed_at
 FROM webhook_events
 ORDER BY processed_at DESC
 LIMIT 10;
 
 SELECT id, registration_id, operation, attempts, next_attempt_at,
-       processed_at, last_error, locked_at
+       processed_at, error_code, error_category, upstream_status,
+       error_recorded_at, locked_at
 FROM outbox
 WHERE registration_id = '00000000-0000-4000-8000-000000000000'
 ORDER BY created_at;
@@ -338,7 +356,7 @@ Critérios:
 
 - webhook válido: uma linha em `webhook_events` e `shopify_customer_id` associado;
 - worker saudável: outbox com `processed_at` preenchido e sem lock abandonado;
-- retry: `attempts` cresce, `next_attempt_at` vai ao futuro e `last_error` permanece sanitizado;
+- retry: `attempts` cresce, `next_attempt_at` vai ao futuro, os campos estruturados de erro são preenchidos e `last_error` permanece `NULL`;
 - sincronização: `registration.status=pending_review` e `sync_completed_at` preenchido;
 - aprovação: após worker, `registration.status=approved`;
 - rejeição: após worker, `registration.status=rejected`.

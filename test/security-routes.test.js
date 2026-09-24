@@ -4,6 +4,7 @@ import { test } from "node:test";
 import request from "supertest";
 import { ReceitaWsClient } from "../src/clients/receita-ws.js";
 import { ShopifyGraphqlClient } from "../src/clients/shopify-graphql.js";
+import { DATA_DIGEST_VERSION, webhookPayloadDigest } from "../src/data-digests.js";
 import { defaultPayload, makeTestContext, newKey } from "./helpers.js";
 
 const abortingFetch = async (_url, options) => new Promise((_resolve, reject) => {
@@ -23,6 +24,28 @@ test("ReceitaWS classifies INATIVA as inactive", async () => {
 test("ReceitaWS timeout is sanitized as registry_unavailable", async () => {
   const client = new ReceitaWsClient({ fetchImpl: abortingFetch, baseUrl: "https://registry.example.invalid", timeoutMs: 5 });
   await assert.rejects(client.checkCnpj(defaultPayload().cnpj), (error) => error.code === "registry_unavailable" && error.status === 503);
+});
+
+test("ReceitaWS accepts only bearer authentication or explicit tokenless mode", async () => {
+  assert.throws(() => new ReceitaWsClient({
+    fetchImpl: async () => {}, baseUrl: "https://registry.example.invalid", token: "synthetic", tokenMode: "query",
+  }), /registry_token_mode_invalid/);
+  assert.throws(() => new ReceitaWsClient({
+    fetchImpl: async () => {}, baseUrl: "https://registry.example.invalid", token: "synthetic", tokenMode: "none",
+  }), /registry_token_forbidden_in_none_mode/);
+  let observed;
+  const bearer = new ReceitaWsClient({
+    fetchImpl: async (url, options) => {
+      observed = { url, authorization: options.headers.Authorization };
+      return { ok: true, async json() { return { nome: "Synthetic", situacao: "ATIVA" }; } };
+    },
+    baseUrl: "https://registry.example.invalid",
+    token: "synthetic-bearer-token",
+    tokenMode: "bearer",
+  });
+  await bearer.checkCnpj(defaultPayload().cnpj);
+  assert.equal(observed.url.includes("token="), false);
+  assert.equal(observed.authorization, "Bearer synthetic-bearer-token");
 });
 
 test("Shopify timeout is sanitized as shopify_unavailable", async () => {
@@ -63,7 +86,13 @@ test("administrative routes require a header secret and reject query secrets", a
   const without = await request(ctx.app).post("/admin/approve").send({ registration_id: newKey() });
   assert.equal(without.status, 401);
   const queryOnly = await request(ctx.app).post(`/admin/approve?secret=${encodeURIComponent(ctx.config.adminSecret)}`).send({ registration_id: newKey() });
-  assert.equal(queryOnly.status, 401);
+  assert.equal(queryOnly.status, 400);
+  assert.equal(queryOnly.body.error.code, "invalid_request");
+  const queryWithHeader = await request(ctx.app)
+    .post(`/admin/approve?secret=${encodeURIComponent(ctx.config.adminSecret)}`)
+    .set("X-B2B-Admin-Secret", ctx.config.adminSecret)
+    .send({ registration_id: newKey() });
+  assert.equal(queryWithHeader.status, 400);
   const withHeader = await request(ctx.app).post("/admin/approve").set("X-B2B-Admin-Secret", ctx.config.adminSecret).send({ registration_id: newKey() });
   assert.equal(withHeader.status, 404);
 });
@@ -126,6 +155,9 @@ test("webhook is idempotent, handles no reservation, and binds exact customer id
   assert.equal(duplicate.body.duplicate, true);
   assert.equal(ctx.store.webhooks.has("synthetic-delivery-1"), true);
   assert.equal(ctx.store.webhooks.has("synthetic-event-1"), false);
+  const storedWebhook = ctx.store.webhooks.get("synthetic-delivery-1");
+  assert.equal(storedWebhook.payload_digest_version, DATA_DIGEST_VERSION);
+  assert.equal(storedWebhook.payload_digest, webhookPayloadDigest(payload, ctx.config.dataDigestSecret));
 
   const registration = await request(ctx.app).post("/v1/registrations").set("Idempotency-Key", newKey()).send(defaultPayload({ email: "second@example.invalid" }));
   const secondPayload = Buffer.from(JSON.stringify({ id: "customer-opaque-2", email: "SECOND@example.invalid" }));

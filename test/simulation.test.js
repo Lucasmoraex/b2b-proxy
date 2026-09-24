@@ -21,6 +21,29 @@ test("simulation safety fails closed in production and with external credentials
   assert.doesNotThrow(() => assertSimulationSafety(simulationConfig));
 });
 
+test("simulation scenario changes are never masked by fiscal cache", async () => {
+  const registryClient = new SimulatedRegistryClient({ scenario: "inactive" });
+  const controller = {
+    getRegistryScenario: () => registryClient.getScenario(),
+    setRegistryScenario: (scenario) => registryClient.setScenario(scenario),
+  };
+  const ctx = makeTestContext({
+    registryClient,
+    simulationController: controller,
+    config: { ...simulationConfig, registrationTokenSecret: "synthetic-registration-secret" },
+  });
+  const payload = defaultPayload({ cnpj: makeCnpj("113456789012") });
+  const inactive = await request(ctx.app).post("/v1/registrations")
+    .set("Idempotency-Key", newKey()).send(payload);
+  assert.equal(inactive.body.error.code, "inactive_cnpj");
+
+  registryClient.setScenario("active");
+  const active = await request(ctx.app).post("/v1/registrations")
+    .set("Idempotency-Key", newKey()).send(payload);
+  assert.equal(active.status, 201);
+  assert.equal(ctx.store.fiscalCache.size, 0);
+});
+
 test("simulation mode covers registry, webhook, worker and approval without external calls", async () => {
   const registryClient = new SimulatedRegistryClient({ scenario: "active" });
   const controller = {
@@ -67,13 +90,15 @@ test("simulation mode covers registry, webhook, worker and approval without exte
     .set("X-Shopify-Webhook-Id", "synthetic-simulation-delivery").send(webhookBody).expect(202);
 
   const shopifyClient = new SimulatedShopifyClient({ store: ctx.store });
-  const worker = new OutboxWorker({ store: ctx.store, shopifyClient, clock: ctx.clock, logger: ctx.logger });
+  const worker = new OutboxWorker({ store: ctx.store, shopifyClient, clock: ctx.clock, logger: ctx.logger, piiKeyring: ctx.piiKeyring });
   await worker.runOnce();
   const pending = await ctx.store.getRegistration(accepted.body.registration_id);
   assert.equal(pending.status, "pending_review");
 
   const simulatedPending = await request(ctx.app).get("/admin/simulation/shopify/synthetic-customer-staging").set(admin);
   assert.ok(simulatedPending.body.customer.tags.includes("b2b-pending"));
+  assert.equal(simulatedPending.body.customer.phone, defaultPayload().phone);
+  assert.equal(simulatedPending.body.customer.metafields.nodes.find((field) => field.key === "cnpj").value, defaultPayload().cnpj);
   assert.equal(simulatedPending.body.customer.metafields.nodes.find((field) => field.key === "cnpj_status").value, "pending");
 
   await request(ctx.app).post("/admin/approve").set(admin).send({ registration_id: accepted.body.registration_id }).expect(202);

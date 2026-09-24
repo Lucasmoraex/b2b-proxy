@@ -1,0 +1,66 @@
+[
+  {
+    "customers": {
+      "nodes": [
+        {
+          "id": "gid://shopify/Customer/synthetic-001",
+          "email": "DUPLICATE@EXAMPLE.INVALID",
+          "phone": "+5511000000001",
+          "tags": ["b2b-approved"],
+          "note": "CNPJ: 12.345.678/9012-30 | CEL: +55 11 00000-0001",
+          "cnpj": { "value": "12345678901230" },
+          "cjnpj": { "value": "12.345.678/9012-30" },
+          "cnpjStatus": { "value": "approved" }
+        },
+        {
+          "id": "gid://shopify/Customer/synthetic-002",
+          "email": "duplicate@example.invalid",
+          "phone": "+55 11 00000-0001",
+          "tags": ["b2b-approved", "b2b-pending"],
+          "note": "CNPJ: 12345678901230 | CEL: +5511000000002",
+          "cnpj": { "value": "12345678901230" },
+          "cjnpj": { "value": "22345678901294" },
+          "cnpjStatus": { "value": "pending" }
+        }
+      ],
+      "pageInfo": { "hasNextPage": true, "endCursor": "synthetic-cursor-1" }
+    }
+  },
+  {
+    "customers": {
+      "nodes": [
+        {
+          "id": "gid://shopify/Customer/synthetic-003",
+          "email": "invalid-email",
+          "phone": "not-a-phone",
+          "tags": ["b2b-approved"],
+          "note": "synthetic note without legacy fields",
+          "cnpj": { "value": "00000000000000" },
+          "cjnpj": null,
+          "cnpjStatus": null
+        },
+        {
+          "id": "gid://shopify/Customer/synthetic-004",
+          "email": "missing@example.invalid",
+          "phone": null,
+          "tags": [],
+          "note": null,
+          "cnpj": null,
+          "cjnpj": null,
+          "cnpjStatus": { "value": "approved" }
+        },
+        {
+          "id": "gid://shopify/Customer/synthetic-005",
+          "email": "historical-typo@example.invalid",
+          "phone": "+5511000000003",
+          "tags": [],
+          "note": "CNPJ: 42345678901200 | CEL: +5511000000004",
+          "cnpj": null,
+          "cjnpj": { "value": "32345678901248" },
+          "cnpjStatus": { "value": "" }
+        }
+      ],
+      "pageInfo": { "hasNextPage": false, "endCursor": null }
+    }
+  }
+]

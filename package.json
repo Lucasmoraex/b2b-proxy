@@ -12,11 +12,16 @@
     "start": "node server.js",
     "worker": "node src/worker-main.js",
     "migrate": "node scripts/migrate.js",
+    "audit:shopify-customers": "node scripts/audit-shopify-customers.js",
+    "import:shopify-identities": "node scripts/import-shopify-identities.js",
+    "verify:historical-identities": "node scripts/verify-historical-identities.js",
+    "retention": "node scripts/run-retention.js",
+    "validate:release-local": "node scripts/validate-release-candidate.js",
     "shopify:webhook:register": "node scripts/register-shopify-webhook.js",
     "simulation:webhook:fixture": "node scripts/generate-simulated-webhook.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "test:coverage": "node --test --test-concurrency=1 --experimental-test-coverage test/*.test.js",
-    "check": "node --check server.js && node --check src/app.js && node --check src/worker.js && node --check scripts/register-shopify-webhook.js && node --check scripts/generate-simulated-webhook.js"
+    "check": "node --check server.js && node --check src/app.js && node --check src/clients/receita-ws.js && node --check src/config.js && node --check src/data-digests.js && node --check src/http-security.js && node --check src/logger.js && node --check src/pii-crypto.js && node --check src/rate-limit.js && node --check src/registration-identities.js && node --check src/retention.js && node --check src/retention-config.js && node --check src/runtime.js && node --check src/security.js && node --check src/worker.js && node --check src/audit/shopify-customer-client.js && node --check src/audit/customer-audit.js && node --check src/audit/duplicate-review.js && node --check src/audit/config.js && node --check src/audit/report.js && node --check src/audit/read-only-telemetry.js && node --check src/identity/historical-identities.js && node --check src/identity/import-config.js && node --check src/identity/import-command.js && node --check src/identity/snapshot-verifier.js && node --check src/services/historical-identity-importer.js && node --check src/services/registration-service.js && node --check src/services/webhook-service.js && node --check src/storage/historical-locks.js && node --check src/storage/memory-store.js && node --check src/storage/postgres-store.js && node --check scripts/audit-shopify-customers.js && node --check scripts/import-shopify-identities.js && node --check scripts/run-retention.js && node --check scripts/validate-release-candidate.js && node --check scripts/verify-historical-identities.js && node --check scripts/register-shopify-webhook.js && node --check scripts/generate-simulated-webhook.js"
   },
   "devDependencies": {
     "supertest": "^7.1.4"

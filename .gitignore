@@ -4,4 +4,5 @@ node_modules
 !.env.example
 !.env.staging-simulation.example
 coverage
+.shopify-audit-reports/
 .DS_Store
