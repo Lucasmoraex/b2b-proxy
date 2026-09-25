@@ -598,7 +598,7 @@ test("historical promotion revalidates minimized registration claims without pla
   const ctx = makeTestContext({ store });
   const response = await request(ctx.app).post("/v1/registrations")
     .set("Idempotency-Key", newKey())
-    .send({ email: fixture.email, cnpj: fixture.cnpj.value, phone: fixture.phone });
+    .send({ email: fixture.email, cnpj: fixture.cnpj.value, phone: fixture.phone, employee_range: "10-29" });
   assert.equal(response.status, 201);
   assert.equal(store.registrations.get(response.body.registration_id).email_normalized, null);
   await assert.rejects(promoteRun(store, staged), /historical_identity_registration_conflict/);

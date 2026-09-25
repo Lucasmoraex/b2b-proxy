@@ -85,6 +85,7 @@ const main = async () => {
     email: "release-candidate@example.invalid",
     cnpj: makeCnpj("763456789012"),
     phone: "+5511999998101",
+    employee_range: "10-29",
   };
   try {
     const health = await request("/health");
@@ -212,6 +213,7 @@ const main = async () => {
       email: "release-after-purge@example.invalid",
       cnpj: fixture.cnpj,
       phone: "+5511999998104",
+      employee_range: "10-29",
     });
     if (cnpjAfterPurge.status !== 409 || cnpjAfterPurge.body?.error?.code !== "cnpj_in_use") {
       throw new Error("release_tombstone_not_blocking");

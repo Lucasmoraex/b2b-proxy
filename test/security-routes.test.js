@@ -61,6 +61,31 @@ test("Shopify email search rejects a different returned email", async () => {
   assert.equal(await client.findCustomerByExactEmail("expected@example.invalid"), null);
 });
 
+test("Shopify GraphQL sends employee range through custom metafieldsSet", async () => {
+  let requestBody;
+  const client = new ShopifyGraphqlClient({
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        async json() { return { data: { metafieldsSet: { metafields: [], userErrors: [] } } }; },
+      };
+    },
+    shop: "shop.example.invalid", token: "fake", apiVersion: "2026-07", timeoutMs: 50,
+  });
+  await client.setMetafields("synthetic", [{
+    key: "employee_range", value: "100-249", type: "single_line_text_field",
+  }]);
+  assert.match(requestBody.query, /mutation SetMetafields/);
+  assert.deepEqual(requestBody.variables.metafields, [{
+    ownerId: "gid://shopify/Customer/synthetic",
+    namespace: "custom",
+    key: "employee_range",
+    value: "100-249",
+    type: "single_line_text_field",
+  }]);
+});
+
 test("Shopify client credentials are exchanged once and cached", async () => {
   let tokenCalls = 0; let graphqlCalls = 0;
   const fetchImpl = async (url) => {

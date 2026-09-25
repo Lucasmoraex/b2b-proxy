@@ -15,7 +15,12 @@ import { persistedErrorRecord } from "../src/security.js";
 
 test("versioned data digests use a dedicated HMAC secret and separated domains", () => {
   const secret = "synthetic-data-digest-secret-minimum-32-characters";
-  const normalized = { email: "digest@example.invalid", cnpj: "12345678901230", phone: "+5511999990001" };
+  const normalized = {
+    email: "digest@example.invalid",
+    cnpj: "12345678901230",
+    phone: "+5511999990001",
+    employee_range: "10-29",
+  };
   const request = registrationRequestDigest(normalized, secret);
   const serialized = JSON.stringify(normalized);
   const webhook = webhookPayloadDigest(Buffer.from(serialized), secret);

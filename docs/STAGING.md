@@ -254,7 +254,7 @@ Primeiro crie uma reserva em modo simulado. O CNPJ abaixo é apenas uma fixture 
 curl --request POST 'https://b2b-v2-staging.example.invalid/v1/registrations' \
   --header 'Content-Type: application/json' \
   --header 'Idempotency-Key: 00000000-0000-4000-8000-000000000101' \
-  --data-binary '{"email":"b2b-staging@example.invalid","cnpj":"99.999.999/9999-62","phone":"+5511999990001"}'
+  --data-binary '{"email":"b2b-staging@example.invalid","cnpj":"99.999.999/9999-62","phone":"+5511999990001","employee_range":"10-29"}'
 ```
 
 Em um checkout local com `.env` de simulação (não commitado), gere uma requisição assinada sem imprimir o secret:

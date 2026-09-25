@@ -101,6 +101,7 @@ export class MemoryRegistrationStore {
         shopify_customer_id: null, status: "reserved",
         idempotency_key: input.idempotencyKey, request_digest: input.requestDigest,
         request_digest_version: input.requestDigestVersion,
+        employee_range_required: Boolean(input.employeeRangeRequired),
         fiscal_status: input.fiscalStatus, fiscal_validated_at: input.now,
         sync_completed_at: null, expires_at: input.expiresAt,
         request_ip_hash: input.requestIpHash || null,

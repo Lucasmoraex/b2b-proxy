@@ -4,10 +4,10 @@ Backend de reserva e sincronização do cadastro B2B da Elements Para Empresas. 
 
 ## Arquitetura
 
-1. O tema reserva e-mail, CNPJ e telefone em `POST /v1/registrations`.
+1. O tema reserva e-mail, CNPJ, telefone e faixa de colaboradores em `POST /v1/registrations`.
 2. PostgreSQL garante unicidade atômica e idempotência.
    Quando habilitado, o índice HMAC de identidades históricas também bloqueia valores já associados a Customers existentes, sem guardar esses valores em texto puro.
-   Novas reservas usam blind indexes HMAC e guardam o payload operacional criptografado com AES-256-GCM; as colunas legadas de PII permanecem `NULL`.
+   Novas reservas usam blind indexes HMAC para as três identidades e guardam o payload operacional, inclusive a faixa de colaboradores, criptografado com AES-256-GCM; as colunas legadas de PII permanecem `NULL`.
 3. O tema só então submete o formulário nativo `create_customer` à Shopify.
 4. O webhook `customers/create`, autenticado por HMAC, associa o `customer_id` à reserva.
 5. O webhook grava uma operação na outbox e responde `202` sem chamar a Admin API.
@@ -139,11 +139,12 @@ Body permitido — campos adicionais, inclusive `password`, são rejeitados:
 {
   "email": "empresa@example.invalid",
   "cnpj": "CNPJ sintético válido",
-  "phone": "+55NUMERO_SINTETICO"
+  "phone": "+55NUMERO_SINTETICO",
+  "employee_range": "10-29"
 }
 ```
 
-O endpoint normaliza o e-mail, valida o CNPJ, normaliza telefone brasileiro para E.164, consulta a situação fiscal e cria na mesma transação a reservation, três blind indexes e o payload operacional criptografado. Ele não pesquisa nem altera Customer Shopify. E-mail, CNPJ e telefone de novas reservations não são gravados em texto puro na linha de `registrations`.
+`employee_range` é obrigatório e aceita somente `1-9`, `10-29`, `30-49`, `50-99`, `100-249` ou `250+`. O endpoint normaliza o e-mail, valida o CNPJ, normaliza telefone brasileiro para E.164, valida a faixa, consulta a situação fiscal e cria na mesma transação a reservation, três blind indexes e o payload operacional criptografado. A faixa participa do digest de idempotência, mas não cria claim, unicidade ou rate limit por identidade. O endpoint não pesquisa nem altera Customer Shopify. E-mail, CNPJ, telefone e faixa de novas reservations não são gravados em texto puro na linha de `registrations`.
 
 A ordem é: idempotência, admissão/quota compartilhada, conflitos em reservas atuais, conflito opcional no snapshot histórico ativo, cache/consulta fiscal e reserva `SERIALIZABLE`. Claims históricos únicos ou duplicados usam os mesmos códigos públicos de conflito e impedem a chamada fiscal. Se o lookup histórico estiver habilitado sem um `active_import_run_id` concluído, o cadastro falha fechado com `503 identity_index_unavailable`; runs `staging` ou `failed` nunca participam do lookup.
 
@@ -180,6 +181,7 @@ Status/códigos:
 - `422 invalid_email`
 - `422 invalid_cnpj`
 - `422 invalid_phone`
+- `422 invalid_employee_range`
 - `422 inactive_cnpj`
 - `422 invalid_request`
 - `403 origin_required` (produção sem `Origin` no cadastro)
@@ -198,7 +200,7 @@ Exemplo propositalmente inválido, sem dado real:
 curl -X POST http://localhost:3000/v1/registrations \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: 00000000-0000-4000-8000-000000000001' \
-  --data '{"email":"empresa@example.invalid","cnpj":"00000000000000","phone":"+5500000000000"}'
+  --data '{"email":"empresa@example.invalid","cnpj":"00000000000000","phone":"+5500000000000","employee_range":"10-29"}'
 ```
 
 ## Consulta de processamento
@@ -271,7 +273,7 @@ Approve/reject também aceitam `shopify_customer_id`; reconciliação exige `reg
 ## Contrato do tema Shopify
 
 1. Gerar um UUID para `Idempotency-Key` e preservá-lo durante retries do mesmo envio.
-2. Enviar somente `email`, `cnpj` e `phone` a `/v1/registrations` e aguardar a resposta.
+2. Enviar somente `email`, `cnpj`, `phone` e `employee_range` a `/v1/registrations` e aguardar a resposta.
 3. Em erro, não submeter `create_customer`; mapear o `error.code` para uma mensagem amigável.
 4. Em `201`, guardar temporariamente `registration_id` e `registration_token` no `sessionStorage` e então submeter o formulário nativo Shopify com e-mail e senha. O proxy nunca recebe a senha.
 5. Não chamar `/register-cnpj`, `/validate-cnpj` ou `/validate-login`.

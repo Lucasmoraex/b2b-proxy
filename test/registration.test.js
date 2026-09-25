@@ -5,6 +5,7 @@ import { DATA_DIGEST_VERSION, registrationRequestDigest } from "../src/data-dige
 import { ExternalServiceError } from "../src/errors.js";
 import { defaultPayload, makeCnpj, makeTestContext, maskCnpj, newKey } from "./helpers.js";
 import { decryptRegistrationOperationalPayload } from "../src/pii-crypto.js";
+import { EMPLOYEE_RANGES } from "../src/validation.js";
 
 const postRegistration = (ctx, payload = defaultPayload(), key = newKey()) => request(ctx.app).post("/v1/registrations").set("Idempotency-Key", key).send(payload);
 
@@ -15,11 +16,15 @@ test("creates a reservation for new normalized fields", async () => {
   assert.equal(response.body.status, "reserved");
   assert.match(response.body.registration_id, /^[0-9a-f-]{36}$/);
   assert.ok(response.body.registration_token);
+  assert.equal("employee_range" in response.body, false);
   const stored = await ctx.store.getRegistration(response.body.registration_id);
   assert.equal(stored.email_normalized, null);
   assert.equal(stored.cnpj_normalized, null);
   assert.equal(stored.phone_e164, null);
+  assert.equal(stored.employee_range_required, true);
+  assert.equal("employee_range" in stored, false);
   const encrypted = await ctx.store.getOperationalPayload(stored.id);
+  assert.equal(JSON.stringify(encrypted).includes(defaultPayload().employee_range), false);
   assert.deepEqual(decryptRegistrationOperationalPayload({
     registrationId: stored.id, encrypted, keyring: ctx.piiKeyring,
   }), defaultPayload());
@@ -28,6 +33,7 @@ test("creates a reservation for new normalized fields", async () => {
     email: defaultPayload().email,
     cnpj: defaultPayload().cnpj,
     phone: defaultPayload().phone,
+    employee_range: defaultPayload().employee_range,
   }, ctx.config.dataDigestSecret));
 });
 
@@ -48,6 +54,9 @@ for (const [name, payload, code] of [
   ["invalid phone", defaultPayload({ phone: "+550000" }), "invalid_phone"],
   ["too many phone digits", defaultPayload({ phone: "+551199999000199" }), "invalid_phone"],
   ["invalid email", defaultPayload({ email: "not-an-email" }), "invalid_email"],
+  ["missing employee range", (() => { const payload = defaultPayload(); delete payload.employee_range; return payload; })(), "invalid_employee_range"],
+  ["non-string employee range", defaultPayload({ employee_range: 10 }), "invalid_employee_range"],
+  ["unsupported employee range", defaultPayload({ employee_range: "10-30" }), "invalid_employee_range"],
   ["password field", { ...defaultPayload(), password: "must-not-be-accepted" }, "invalid_request"],
 ]) test(`rejects ${name}`, async () => {
   const ctx = makeTestContext();
@@ -55,6 +64,12 @@ for (const [name, payload, code] of [
   assert.equal(response.status, 422);
   assert.equal(response.body.error.code, code);
   assert.equal(ctx.registryCalls, 0);
+});
+
+for (const employeeRange of EMPLOYEE_RANGES) test(`accepts employee range ${employeeRange}`, async () => {
+  const ctx = makeTestContext();
+  const response = await postRegistration(ctx, defaultPayload({ employee_range: employeeRange }));
+  assert.equal(response.status, 201);
 });
 
 test("rejects inactive CNPJ and creates no reservation", async () => {
@@ -139,6 +154,25 @@ test("same Idempotency-Key returns the same response without another registry ca
   assert.equal(ctx.registryCalls, 1);
 });
 
+test("employee range participates in idempotency without becoming an identity", async () => {
+  const ctx = makeTestContext();
+  const key = newKey();
+  const first = await postRegistration(ctx, defaultPayload({ employee_range: "30-49" }), key);
+  const repeated = await postRegistration(ctx, defaultPayload({ employee_range: "30-49" }), key);
+  const conflict = await postRegistration(ctx, defaultPayload({ employee_range: "50-99" }), key);
+  assert.equal(first.status, 201);
+  assert.deepEqual(repeated.body, first.body);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error.code, "idempotency_conflict");
+  assert.equal(ctx.registryCalls, 1);
+  assert.equal([...ctx.store.registrationIdentityClaims.values()].filter((claim) => (
+    claim.registration_id === first.body.registration_id
+  )).length, 3);
+  assert.equal([...ctx.store.rateLimitBuckets.values()].some((bucket) => (
+    bucket.scope === "registration_identity_employee_range"
+  )), false);
+});
+
 test("registration status requires the opaque token and exposes no PII", async () => {
   const ctx = makeTestContext();
   const created = await postRegistration(ctx);
@@ -151,6 +185,7 @@ test("registration status requires the opaque token and exposes no PII", async (
   assert.equal("email" in response.body, false);
   assert.equal("cnpj" in response.body, false);
   assert.equal("phone" in response.body, false);
+  assert.equal("employee_range" in response.body, false);
 });
 
 test("registration token is rejected at and after the exact expiration boundary", async () => {

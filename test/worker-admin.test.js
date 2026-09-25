@@ -4,6 +4,7 @@ import request from "supertest";
 import { OutboxWorker } from "../src/worker.js";
 import { defaultPayload, makeTestContext, newKey } from "./helpers.js";
 import { buildRegistrationIdentityClaims } from "../src/registration-identities.js";
+import { encryptRegistrationOperationalPayload } from "../src/pii-crypto.js";
 
 function shopifyMock(overrides = {}) {
   const calls = [];
@@ -44,7 +45,76 @@ test("worker synchronizes by customer_id and keeps account pending review", asyn
   assert.ok(shopify.calls.some((call) => call[0] === "phone" && call[2] === defaultPayload().phone));
   assert.ok(shopify.calls.some((call) => call[0] === "metafields"
     && call[2].some((field) => field.key === "cnpj" && field.value === defaultPayload().cnpj)));
+  assert.ok(shopify.calls.some((call) => call[0] === "metafields"
+    && call[2].some((field) => field.key === "employee_range"
+      && field.value === defaultPayload().employee_range
+      && field.type === "single_line_text_field")));
   assert.equal(shopify.calls.some((call) => call[0] === "addTags" && call[2].includes("b2b-approved")), false);
+});
+
+test("employee range metafield failure blocks completion and auto-approval until retry succeeds", async () => {
+  const ctx = makeTestContext();
+  const registration = await boundRegistration(ctx);
+  let shouldFail = true;
+  const shopify = shopifyMock({
+    async setMetafields(id, fields) {
+      this.calls.push(["metafields", id, fields]);
+      if (shouldFail && fields.some((field) => field.key === "employee_range")) {
+        shouldFail = false;
+        throw Object.assign(new Error("synthetic failure"), { code: "shopify_operation_failed" });
+      }
+    },
+  });
+  const worker = new OutboxWorker({
+    store: ctx.store, shopifyClient: shopify, clock: ctx.clock, logger: ctx.logger,
+    piiKeyring: ctx.piiKeyring, autoApprove: true,
+  });
+
+  await worker.runOnce();
+  let stored = await ctx.store.getRegistration(registration.id);
+  assert.equal(stored.status, "pending_validation");
+  assert.equal(stored.sync_completed_at, null);
+  assert.equal([...ctx.store.outbox.values()].some((item) => item.operation === "approve_registration"), false);
+
+  ctx.setNow("2030-01-01T00:00:03.000Z");
+  await worker.runOnce();
+  stored = await ctx.store.getRegistration(registration.id);
+  assert.equal(stored.status, "pending_review");
+  assert.ok(stored.sync_completed_at);
+  assert.equal([...ctx.store.outbox.values()].some((item) => (
+    item.operation === "approve_registration" && !item.processed_at
+  )), true);
+});
+
+test("legacy queued registration without employee range remains processable", async () => {
+  const ctx = makeTestContext();
+  const registration = await boundRegistration(ctx, "synthetic-legacy-customer");
+  ctx.store.registrations.get(registration.id).employee_range_required = false;
+  const encrypted = encryptRegistrationOperationalPayload({
+    registrationId: registration.id,
+    payload: {
+      email: defaultPayload().email,
+      cnpj: defaultPayload().cnpj,
+      phone: defaultPayload().phone,
+    },
+    keyring: ctx.piiKeyring,
+  });
+  const current = ctx.store.operationalPayloads.get(registration.id);
+  ctx.store.operationalPayloads.set(registration.id, {
+    ...current,
+    ciphertext: encrypted.ciphertext,
+    nonce: encrypted.nonce,
+    auth_tag: encrypted.authTag,
+    encryption_key_version: encrypted.encryptionKeyVersion,
+  });
+  const shopify = shopifyMock();
+  const worker = new OutboxWorker({
+    store: ctx.store, shopifyClient: shopify, clock: ctx.clock, logger: ctx.logger, piiKeyring: ctx.piiKeyring,
+  });
+  await worker.runOnce();
+  assert.equal((await ctx.store.getRegistration(registration.id)).status, "pending_review");
+  assert.equal(shopify.calls.some((call) => call[0] === "metafields"
+    && call[2].some((field) => field.key === "employee_range")), false);
 });
 
 test("Shopify failure schedules exponential retry with sanitized error", async () => {

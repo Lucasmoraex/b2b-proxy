@@ -80,5 +80,6 @@ export const defaultPayload = (overrides = {}) => ({
   email: "empresa@example.invalid",
   cnpj: makeCnpj(),
   phone: "+5511999990001",
+  employee_range: "10-29",
   ...overrides,
 });

@@ -4,7 +4,7 @@
 
 `registration_identity_claims` contém somente `registration_id`, tipo, versão da chave, HMAC SHA-256 e estado. O domínio do HMAC é separado por tipo (`email`, `cnpj`, `phone`). O índice parcial único cobre todos os claims que não estão `released` e é a garantia atômica final contra concorrência. Não há valor normalizado nessa tabela.
 
-`registration_operational_payloads` contém o payload mínimo necessário ao webhook/worker cifrado com AES-256-GCM. O AAD liga o ciphertext ao `registration_id` e à finalidade `registration-operational-payload:v1`. Nonce de 12 bytes e auth tag de 16 bytes são persistidos separadamente. As colunas legadas `email_normalized`, `cnpj_normalized` e `phone_e164` de `registrations` ficaram nullable; novas reservations gravam `NULL` nelas. A leitura legada existe apenas para registros anteriores à migration.
+`registration_operational_payloads` contém o payload mínimo necessário ao webhook/worker cifrado com AES-256-GCM, incluindo `employee_range` para novos cadastros. O AAD liga o ciphertext ao `registration_id` e à finalidade `registration-operational-payload:v1`. Nonce de 12 bytes e auth tag de 16 bytes são persistidos separadamente. As colunas legadas `email_normalized`, `cnpj_normalized` e `phone_e164` de `registrations` ficaram nullable; novas reservations gravam `NULL` nelas. `employee_range_required` diferencia novos registros de filas legadas sem armazenar a faixa em texto puro. A leitura legada existe apenas para registros anteriores à migration.
 
 O webhook calcula o blind index do e-mail e associa a reservation por esse índice. Depois da associação, todas as operações usam `shopify_customer_id`. O worker descriptografa CNPJ e telefone somente enquanto o payload ainda é operacionalmente necessário.
 

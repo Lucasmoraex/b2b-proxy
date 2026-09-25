@@ -172,13 +172,13 @@ export class PostgresRegistrationStore {
           const result = await client.query(`INSERT INTO registrations (
               id, email_normalized, cnpj_normalized, phone_e164, status,
               idempotency_key, request_digest, request_digest_version, fiscal_status, fiscal_validated_at,
-              expires_at, request_ip_hash, created_at, updated_at
-            ) VALUES ($1,$2,$3,$4,'reserved',$5,$6,$7,$8,$9,$10,$11,$9,$9)
+              expires_at, request_ip_hash, employee_range_required, created_at, updated_at
+            ) VALUES ($1,$2,$3,$4,'reserved',$5,$6,$7,$8,$9,$10,$11,$12,$9,$9)
             RETURNING *`, [
             id, minimized ? null : input.email, minimized ? null : input.cnpj,
             minimized ? null : input.phone, input.idempotencyKey,
             input.requestDigest, input.requestDigestVersion, input.fiscalStatus, input.now, input.expiresAt,
-            input.requestIpHash || null,
+            input.requestIpHash || null, Boolean(input.employeeRangeRequired),
           ]);
           for (const claim of input.registrationClaims || []) {
             await client.query(`INSERT INTO registration_identity_claims (

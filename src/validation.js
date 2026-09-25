@@ -3,6 +3,15 @@ import { AppError } from "./errors.js";
 const MAX_EMAIL = 254;
 const MAX_CNPJ_INPUT = 32;
 const MAX_PHONE_INPUT = 32;
+export const EMPLOYEE_RANGES = Object.freeze([
+  "1-9",
+  "10-29",
+  "30-49",
+  "50-99",
+  "100-249",
+  "250+",
+]);
+const EMPLOYEE_RANGE_SET = new Set(EMPLOYEE_RANGES);
 
 export function normalizeEmail(value) {
   if (typeof value !== "string" || value.length > MAX_EMAIL) throw new AppError("invalid_email", 422);
@@ -46,6 +55,13 @@ export function normalizeBrazilianPhone(value) {
   if (digits.length === 10 || digits.length === 11) digits = `55${digits}`;
   if (!/^55[1-9]\d(?:\d{8}|\d{9})$/.test(digits)) throw new AppError("invalid_phone", 422);
   return `+${digits}`;
+}
+
+export function normalizeEmployeeRange(value) {
+  if (typeof value !== "string" || !EMPLOYEE_RANGE_SET.has(value)) {
+    throw new AppError("invalid_employee_range", 422);
+  }
+  return value;
 }
 
 export function validateUuid(value, errorCode = "invalid_idempotency_key") {

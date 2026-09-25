@@ -1,7 +1,13 @@
 import crypto from "node:crypto";
 import { AppError, ExternalServiceError } from "../errors.js";
 import { signRegistrationToken } from "../security.js";
-import { normalizeBrazilianPhone, normalizeCnpj, normalizeEmail, validateUuid } from "../validation.js";
+import {
+  normalizeBrazilianPhone,
+  normalizeCnpj,
+  normalizeEmail,
+  normalizeEmployeeRange,
+  validateUuid,
+} from "../validation.js";
 import { identityIndexSecretFingerprint, registrationIdentityClaims } from "../identity/historical-identities.js";
 import { registrationAdmissionDigest, registrationRateLimitIdentityKeys } from "../rate-limit.js";
 import { DATA_DIGEST_VERSION, registrationRequestDigest } from "../data-digests.js";
@@ -70,13 +76,16 @@ export class RegistrationService {
 
   async create(body, idempotencyHeader, { ipHash } = {}) {
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new AppError("invalid_request", 422);
-    const allowed = new Set(["email", "cnpj", "phone"]);
+    const allowed = new Set(["email", "cnpj", "phone", "employee_range"]);
     if (Object.keys(body).some((key) => !allowed.has(key))) throw new AppError("invalid_request", 422);
     const idempotencyKey = validateUuid(idempotencyHeader);
     const email = normalizeEmail(body?.email);
     const cnpj = normalizeCnpj(body?.cnpj);
     const phone = normalizeBrazilianPhone(body?.phone);
-    const requestDigest = registrationRequestDigest({ email, cnpj, phone }, this.dataDigestSecret);
+    const employeeRange = normalizeEmployeeRange(body?.employee_range);
+    const requestDigest = registrationRequestDigest({
+      email, cnpj, phone, employee_range: employeeRange,
+    }, this.dataDigestSecret);
     const now = this.clock();
 
     const previous = await this.store.findByIdempotencyKey(idempotencyKey);
@@ -156,12 +165,13 @@ export class RegistrationService {
     const registrationId = this.idFactory();
     const operationalPayload = encryptRegistrationOperationalPayload({
       registrationId,
-      payload: { email, cnpj, phone },
+      payload: { email, cnpj, phone, employee_range: employeeRange },
       keyring: this.piiKeyring,
     });
     const result = await this.store.reserve({
       registrationId,
       email, cnpj, phone, idempotencyKey, requestDigest, requestDigestVersion: DATA_DIGEST_VERSION,
+      employeeRangeRequired: true,
       registrationClaims,
       operationalPayload: { ...operationalPayload, neededUntil: expiresAt },
       fiscalStatus: "ATIVA", now, expiresAt,

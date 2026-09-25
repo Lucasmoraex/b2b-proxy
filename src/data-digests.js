@@ -33,8 +33,13 @@ function hmacDigest(domain, value, secret) {
     .digest("hex");
 }
 
-export function registrationRequestDigest({ email, cnpj, phone }, secret) {
-  return hmacDigest(DOMAINS.registrationRequest, JSON.stringify({ email, cnpj, phone }), secret);
+export function registrationRequestDigest({ email, cnpj, phone, employee_range: employeeRange }, secret) {
+  return hmacDigest(DOMAINS.registrationRequest, JSON.stringify({
+    email,
+    cnpj,
+    phone,
+    employee_range: employeeRange,
+  }), secret);
 }
 
 export function webhookPayloadDigest(rawBody, secret) {

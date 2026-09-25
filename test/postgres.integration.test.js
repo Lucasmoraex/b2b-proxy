@@ -24,7 +24,11 @@ import {
 import { makeCnpj } from "./helpers.js";
 import { persistedErrorRecord } from "../src/security.js";
 import { buildRegistrationIdentityClaims } from "../src/registration-identities.js";
-import { createPiiEncryptionKeyring, encryptRegistrationOperationalPayload } from "../src/pii-crypto.js";
+import {
+  createPiiEncryptionKeyring,
+  decryptRegistrationOperationalPayload,
+  encryptRegistrationOperationalPayload,
+} from "../src/pii-crypto.js";
 import { RetentionService } from "../src/retention.js";
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -74,6 +78,7 @@ test("PostgreSQL migrations, indexed precheck, cache and concurrent uniqueness",
 
     const winner = results.find((result) => result.status === "fulfilled").value.registration;
     assert.equal(winner.request_digest_version, DATA_DIGEST_VERSION);
+    assert.equal(winner.employee_range_required, false);
     const conflict = await store.findConflict({
       email: "unused@example.invalid", cnpj: base.cnpj, phone: "+5511999990099", now,
     });
@@ -487,6 +492,7 @@ test("PostgreSQL migrations, indexed precheck, cache and concurrent uniqueness",
       return {
         registrationId,
         ...identity,
+        employeeRangeRequired: Boolean(identity.employee_range),
         registrationClaims,
         operationalPayload: {
           ...operationalPayload,
@@ -504,9 +510,11 @@ test("PostgreSQL migrations, indexed precheck, cache and concurrent uniqueness",
     const sharedMinimizedCnpj = makeCnpj("143456789012");
     const minimizedA = minimizedInput({
       email: "minimized-a@example.invalid", cnpj: sharedMinimizedCnpj, phone: "+5511999990141",
+      employee_range: "30-49",
     });
     const minimizedB = minimizedInput({
       email: "minimized-b@example.invalid", cnpj: sharedMinimizedCnpj, phone: "+5511999990142",
+      employee_range: "30-49",
     });
     const minimizedResults = await Promise.allSettled([
       store.reserve(minimizedA), secondStore.reserve(minimizedB),
@@ -518,14 +526,22 @@ test("PostgreSQL migrations, indexed precheck, cache and concurrent uniqueness",
     assert.equal(minimizedWinner.email_normalized, null);
     assert.equal(minimizedWinner.cnpj_normalized, null);
     assert.equal(minimizedWinner.phone_e164, null);
+    assert.equal(minimizedWinner.employee_range_required, true);
+    assert.equal("employee_range" in minimizedWinner, false);
     const persistedClaims = await pool.query(`SELECT identity_type, claim_state, value_hash
       FROM registration_identity_claims WHERE registration_id=$1 ORDER BY identity_type`, [minimizedWinner.id]);
     assert.equal(persistedClaims.rowCount, 3);
     assert.equal(JSON.stringify(persistedClaims.rows).includes(sharedMinimizedCnpj), false);
-    const persistedPayload = await pool.query(`SELECT ciphertext, nonce, auth_tag, purged_at
+    const persistedPayload = await pool.query(`SELECT ciphertext, nonce, auth_tag, encryption_key_version, purged_at
       FROM registration_operational_payloads WHERE registration_id=$1`, [minimizedWinner.id]);
     assert.equal(persistedPayload.rowCount, 1);
     assert.equal(persistedPayload.rows[0].purged_at, null);
+    assert.equal(JSON.stringify(persistedPayload.rows[0]).includes("30-49"), false);
+    assert.equal(decryptRegistrationOperationalPayload({
+      registrationId: minimizedWinner.id,
+      encrypted: persistedPayload.rows[0],
+      keyring: piiKeyring,
+    }).employee_range, "30-49");
 
     const winnerEmailClaim = minimizedWinnerInput.registrationClaims.find((claim) => claim.type === "email");
     await store.associateWebhook({
