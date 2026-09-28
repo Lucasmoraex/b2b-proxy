@@ -55,6 +55,7 @@ export function makeTestContext(options = {}) {
     shopifyWebhookSecret: "test-webhook-secret-not-production",
     adminSecret: "test-admin-secret-not-production",
     rateLimitKeySecret: "test-rate-limit-key-secret-not-production-minimum-32",
+    requireEmployeeRange: false,
     enableLegacyMutations: false, enableLegacyLogin: false,
     simulationMode: false,
     ...options.config,

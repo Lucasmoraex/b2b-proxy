@@ -43,6 +43,7 @@ export function loadConfig(env = process.env) {
     registryTokenMode: (env.B2B_RECEITAWS_TOKEN_MODE || "bearer").toLowerCase(),
     allowedOrigins: parseAllowedOrigins(env.B2B_ALLOWED_ORIGIN || ""),
     autoApprove: bool(env.B2B_AUTO_APPROVE, false),
+    requireEmployeeRange: bool(env.B2B_REQUIRE_EMPLOYEE_RANGE, false),
     enableLegacyMutations: bool(env.B2B_ENABLE_LEGACY_MUTATIONS, false),
     enableLegacyLogin: bool(env.B2B_ENABLE_LEGACY_LOGIN, false),
     enableHistoricalIdentityLookup: bool(env.B2B_ENABLE_HISTORICAL_IDENTITY_LOOKUP, false),

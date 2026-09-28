@@ -85,6 +85,7 @@ Configuração adicional:
 - `B2B_REGISTRATION_TOKEN_CLOCK_TOLERANCE_MS` (padrão `1000`, máximo `5000`; expiração antecipada/fail-closed)
 - `B2B_DATA_DIGEST_VERSION` (somente `hmac-sha256-v1`)
 - `B2B_AUTO_APPROVE`
+- `B2B_REQUIRE_EMPLOYEE_RANGE` (padrão `false`; habilitar somente após o rollout do tema)
 - `B2B_ENABLE_LEGACY_MUTATIONS`
 - `B2B_ENABLE_LEGACY_LOGIN`
 - `B2B_ENABLE_HISTORICAL_IDENTITY_LOOKUP` (padrão `false`)
@@ -144,7 +145,7 @@ Body permitido — campos adicionais, inclusive `password`, são rejeitados:
 }
 ```
 
-`employee_range` é obrigatório e aceita somente `1-9`, `10-29`, `30-49`, `50-99`, `100-249` ou `250+`. O endpoint normaliza o e-mail, valida o CNPJ, normaliza telefone brasileiro para E.164, valida a faixa, consulta a situação fiscal e cria na mesma transação a reservation, três blind indexes e o payload operacional criptografado. A faixa participa do digest de idempotência, mas não cria claim, unicidade ou rate limit por identidade. O endpoint não pesquisa nem altera Customer Shopify. E-mail, CNPJ, telefone e faixa de novas reservations não são gravados em texto puro na linha de `registrations`.
+Durante o rollout, `employee_range` é opcional por padrão. Quando enviado, aceita somente `1-9`, `10-29`, `30-49`, `50-99`, `100-249` ou `250+`; valor inválido retorna `422 invalid_employee_range`. Com `B2B_REQUIRE_EMPLOYEE_RANGE=true`, a ausência também retorna esse erro. O endpoint normaliza o e-mail, valida o CNPJ, normaliza telefone brasileiro para E.164, valida a faixa quando presente, consulta a situação fiscal e cria na mesma transação a reservation, três blind indexes e o payload operacional criptografado. A faixa presente participa do digest de idempotência, mas não cria claim, unicidade ou rate limit por identidade. Quando ausente, o JSON canônico do digest permanece byte a byte igual ao contrato anterior. O endpoint não pesquisa nem altera Customer Shopify. E-mail, CNPJ, telefone e faixa de novas reservations não são gravados em texto puro na linha de `registrations`.
 
 A ordem é: idempotência, admissão/quota compartilhada, conflitos em reservas atuais, conflito opcional no snapshot histórico ativo, cache/consulta fiscal e reserva `SERIALIZABLE`. Claims históricos únicos ou duplicados usam os mesmos códigos públicos de conflito e impedem a chamada fiscal. Se o lookup histórico estiver habilitado sem um `active_import_run_id` concluído, o cadastro falha fechado com `503 identity_index_unavailable`; runs `staging` ou `failed` nunca participam do lookup.
 
@@ -273,7 +274,7 @@ Approve/reject também aceitam `shopify_customer_id`; reconciliação exige `reg
 ## Contrato do tema Shopify
 
 1. Gerar um UUID para `Idempotency-Key` e preservá-lo durante retries do mesmo envio.
-2. Enviar somente `email`, `cnpj`, `phone` e `employee_range` a `/v1/registrations` e aguardar a resposta.
+2. Enviar somente `email`, `cnpj`, `phone` e `employee_range` a `/v1/registrations` e aguardar a resposta. Durante a transição, versões antigas do tema ainda podem omitir `employee_range` enquanto `B2B_REQUIRE_EMPLOYEE_RANGE=false`.
 3. Em erro, não submeter `create_customer`; mapear o `error.code` para uma mensagem amigável.
 4. Em `201`, guardar temporariamente `registration_id` e `registration_token` no `sessionStorage` e então submeter o formulário nativo Shopify com e-mail e senha. O proxy nunca recebe a senha.
 5. Não chamar `/register-cnpj`, `/validate-cnpj` ou `/validate-login`.
@@ -281,6 +282,16 @@ Approve/reject também aceitam `shopify_customer_id`; reconciliação exige `reg
 7. Após login nativo, liberar B2B somente quando o Customer autenticado tiver simultaneamente `b2b-approved`, `custom.cnpj` e `custom.cnpj_status == approved`.
 8. Redirecionar `pending`, `rejected` e `failed` para páginas adequadas sem expor estado de outras contas.
 9. Remover imediatamente `registration_id` e `registration_token` do `sessionStorage` quando o status for terminal (`approved`, `rejected`, `failed` ou `expired`), quando o relógio atingir `expires_at`, ou quando a consulta retornar `401 unauthorized`. Não copiar esses valores para `localStorage`, query string, analytics ou logs.
+
+### Rollout de `employee_range`
+
+1. Aplicar `009_registration_employee_range.sql` antes de iniciar qualquer Web novo. A migration é aditiva e usa `ADD COLUMN IF NOT EXISTS`; o runner também a registra em `schema_migrations`.
+2. Publicar Web e Worker do mesmo SHA com `B2B_REQUIRE_EMPLOYEE_RANGE=false`.
+3. Validar cadastro antigo sem faixa e cadastro novo com faixa.
+4. Publicar o tema enviando `employee_range` e observar erros/filas.
+5. Somente depois de confirmar que não existem clientes antigos relevantes, definir `B2B_REQUIRE_EMPLOYEE_RANGE=true` e reiniciar o Web. O Worker não depende dessa flag.
+
+Não inverta as etapas: Web novo sem a migration tenta gravar `employee_range_required` e falha; tema novo contra o backend antigo recebe `invalid_request`; backend anterior obrigatório contra tema antigo recebe `invalid_employee_range`.
 
 ## Segurança operacional
 

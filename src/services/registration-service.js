@@ -25,6 +25,7 @@ export class RegistrationService {
     registrationTokenSecret,
     dataDigestSecret,
     piiKeyring,
+    requireEmployeeRange = false,
     idFactory = () => crypto.randomUUID(),
     historicalIdentityLookupEnabled = false,
     historicalIdentityShopDomain = "",
@@ -47,6 +48,7 @@ export class RegistrationService {
     this.registrationTokenSecret = registrationTokenSecret;
     this.dataDigestSecret = dataDigestSecret;
     this.piiKeyring = piiKeyring;
+    this.requireEmployeeRange = requireEmployeeRange;
     this.idFactory = idFactory;
     this.historicalIdentityLookupEnabled = historicalIdentityLookupEnabled;
     this.historicalIdentityShopDomain = historicalIdentityShopDomain;
@@ -82,7 +84,12 @@ export class RegistrationService {
     const email = normalizeEmail(body?.email);
     const cnpj = normalizeCnpj(body?.cnpj);
     const phone = normalizeBrazilianPhone(body?.phone);
-    const employeeRange = normalizeEmployeeRange(body?.employee_range);
+    const employeeRange = body.employee_range === undefined
+      ? undefined
+      : normalizeEmployeeRange(body.employee_range);
+    if (this.requireEmployeeRange && employeeRange === undefined) {
+      throw new AppError("invalid_employee_range", 422);
+    }
     const requestDigest = registrationRequestDigest({
       email, cnpj, phone, employee_range: employeeRange,
     }, this.dataDigestSecret);
@@ -163,15 +170,17 @@ export class RegistrationService {
 
     const expiresAt = new Date(now.getTime() + this.reservationTtlMs);
     const registrationId = this.idFactory();
+    const payload = { email, cnpj, phone };
+    if (employeeRange !== undefined) payload.employee_range = employeeRange;
     const operationalPayload = encryptRegistrationOperationalPayload({
       registrationId,
-      payload: { email, cnpj, phone, employee_range: employeeRange },
+      payload,
       keyring: this.piiKeyring,
     });
     const result = await this.store.reserve({
       registrationId,
       email, cnpj, phone, idempotencyKey, requestDigest, requestDigestVersion: DATA_DIGEST_VERSION,
-      employeeRangeRequired: true,
+      employeeRangeRequired: employeeRange !== undefined,
       registrationClaims,
       operationalPayload: { ...operationalPayload, neededUntil: expiresAt },
       fiscalStatus: "ATIVA", now, expiresAt,

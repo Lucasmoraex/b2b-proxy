@@ -54,6 +54,11 @@ test("production HTTP configuration is explicit and rejects development origins"
   }), /allowed_origin_invalid/);
 });
 
+test("employee range requirement is opt-in", () => {
+  assert.equal(loadConfig({}).requireEmployeeRange, false);
+  assert.equal(loadConfig({ B2B_REQUIRE_EMPLOYEE_RANGE: "true" }).requireEmployeeRange, true);
+});
+
 test("shared limiter is atomic under concurrent requests", async () => {
   const ctx = makeTestContext({ config: { sharedRateLimitMax: 3 } });
   const responses = await Promise.all(Array.from({ length: 12 }, (_, index) => post(ctx, uniquePayload(index + 1))));

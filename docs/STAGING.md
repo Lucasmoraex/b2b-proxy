@@ -96,6 +96,7 @@ Use valores aleatórios diferentes dos de produção. Nunca cole valores no Git,
 | `SHOPIFY_WEBHOOK_SECRET` | perfil real: secret que assina o webhook; simulação: secret exclusivo iniciado por `sim_` |
 | `B2B_ALLOWED_ORIGIN` | origem HTTPS exata do tema de teste; lista separada por vírgula se necessário |
 | `B2B_AUTO_APPROVE` | `false` |
+| `B2B_REQUIRE_EMPLOYEE_RANGE` | `false` durante o rollout; `true` somente depois que o tema estiver atualizado |
 | `B2B_ENABLE_LEGACY_MUTATIONS` | `false` |
 | `B2B_ENABLE_LEGACY_LOGIN` | `false` |
 | `B2B_REQUEST_TIMEOUT_MS` | por exemplo `8000` |

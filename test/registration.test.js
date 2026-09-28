@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { test } from "node:test";
 import request from "supertest";
 import { DATA_DIGEST_VERSION, registrationRequestDigest } from "../src/data-digests.js";
@@ -8,6 +9,12 @@ import { decryptRegistrationOperationalPayload } from "../src/pii-crypto.js";
 import { EMPLOYEE_RANGES } from "../src/validation.js";
 
 const postRegistration = (ctx, payload = defaultPayload(), key = newKey()) => request(ctx.app).post("/v1/registrations").set("Idempotency-Key", key).send(payload);
+
+const withoutEmployeeRange = (overrides = {}) => {
+  const payload = defaultPayload(overrides);
+  delete payload.employee_range;
+  return payload;
+};
 
 test("creates a reservation for new normalized fields", async () => {
   const ctx = makeTestContext();
@@ -37,6 +44,41 @@ test("creates a reservation for new normalized fields", async () => {
   }, ctx.config.dataDigestSecret));
 });
 
+test("accepts the legacy contract without employee range by default and preserves its digest", async () => {
+  const ctx = makeTestContext();
+  const payload = withoutEmployeeRange();
+  const response = await postRegistration(ctx, payload);
+  assert.equal(response.status, 201);
+  const stored = await ctx.store.getRegistration(response.body.registration_id);
+  const encrypted = await ctx.store.getOperationalPayload(stored.id);
+  assert.equal(stored.employee_range_required, false);
+  assert.deepEqual(decryptRegistrationOperationalPayload({
+    registrationId: stored.id, encrypted, keyring: ctx.piiKeyring,
+  }), payload);
+
+  const legacyCanonicalJson = JSON.stringify({
+    email: payload.email,
+    cnpj: payload.cnpj,
+    phone: payload.phone,
+  });
+  const legacyDigest = crypto.createHmac("sha256", ctx.config.dataDigestSecret)
+    .update("b2b-data-digest\0registration-request:v1\0")
+    .update(legacyCanonicalJson)
+    .digest("hex");
+  assert.equal(stored.request_digest, legacyDigest);
+  assert.equal(stored.request_digest, registrationRequestDigest(payload, ctx.config.dataDigestSecret));
+});
+
+test("requires employee range only when the rollout flag is enabled", async () => {
+  const optional = makeTestContext();
+  const required = makeTestContext({ config: { requireEmployeeRange: true } });
+  assert.equal((await postRegistration(optional, withoutEmployeeRange())).status, 201);
+  const rejected = await postRegistration(required, withoutEmployeeRange());
+  assert.equal(rejected.status, 422);
+  assert.equal(rejected.body.error.code, "invalid_employee_range");
+  assert.equal(required.registryCalls, 0);
+});
+
 test("accepts a masked valid CNPJ without truncation", async () => {
   const ctx = makeTestContext();
   const cnpj = makeCnpj("223456789012");
@@ -54,7 +96,6 @@ for (const [name, payload, code] of [
   ["invalid phone", defaultPayload({ phone: "+550000" }), "invalid_phone"],
   ["too many phone digits", defaultPayload({ phone: "+551199999000199" }), "invalid_phone"],
   ["invalid email", defaultPayload({ email: "not-an-email" }), "invalid_email"],
-  ["missing employee range", (() => { const payload = defaultPayload(); delete payload.employee_range; return payload; })(), "invalid_employee_range"],
   ["non-string employee range", defaultPayload({ employee_range: 10 }), "invalid_employee_range"],
   ["unsupported employee range", defaultPayload({ employee_range: "10-30" }), "invalid_employee_range"],
   ["password field", { ...defaultPayload(), password: "must-not-be-accepted" }, "invalid_request"],
@@ -151,6 +192,17 @@ test("same Idempotency-Key returns the same response without another registry ca
   const first = await postRegistration(ctx, defaultPayload(), key);
   const second = await postRegistration(ctx, defaultPayload(), key);
   assert.deepEqual(second.body, first.body);
+  assert.equal(ctx.registryCalls, 1);
+});
+
+test("legacy request idempotency remains stable without employee range", async () => {
+  const ctx = makeTestContext();
+  const key = newKey();
+  const payload = withoutEmployeeRange();
+  const first = await postRegistration(ctx, payload, key);
+  const repeated = await postRegistration(ctx, payload, key);
+  assert.equal(first.status, 201);
+  assert.deepEqual(repeated.body, first.body);
   assert.equal(ctx.registryCalls, 1);
 });
 

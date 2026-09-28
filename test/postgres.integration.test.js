@@ -47,6 +47,17 @@ test("PostgreSQL migrations, indexed precheck, cache and concurrent uniqueness",
       const migration = await fs.readFile(new URL(`../migrations/${migrationName}`, import.meta.url), "utf8");
       await pool.query(migration);
     }
+    const employeeRangeMigration = await fs.readFile(
+      new URL("../migrations/009_registration_employee_range.sql", import.meta.url), "utf8",
+    );
+    await pool.query(employeeRangeMigration);
+    const employeeRangeColumn = await pool.query(`SELECT is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema=current_schema() AND table_name='registrations'
+        AND column_name='employee_range_required'`);
+    assert.equal(employeeRangeColumn.rowCount, 1);
+    assert.equal(employeeRangeColumn.rows[0].is_nullable, "NO");
+    assert.match(employeeRangeColumn.rows[0].column_default, /false/);
     const store = new PostgresRegistrationStore({ pool });
     const now = new Date("2030-01-01T00:00:00.000Z");
     const base = {

@@ -30,6 +30,7 @@ export function createApp(dependencies) {
     registrationTokenSecret: config.registrationTokenSecret,
     dataDigestSecret: config.dataDigestSecret,
     piiKeyring,
+    requireEmployeeRange: config.requireEmployeeRange,
     historicalIdentityLookupEnabled: config.enableHistoricalIdentityLookup,
     historicalIdentityShopDomain: config.shop,
     historicalIdentityIndexSecret: config.identityIndexSecret,

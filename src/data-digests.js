@@ -34,12 +34,11 @@ function hmacDigest(domain, value, secret) {
 }
 
 export function registrationRequestDigest({ email, cnpj, phone, employee_range: employeeRange }, secret) {
-  return hmacDigest(DOMAINS.registrationRequest, JSON.stringify({
-    email,
-    cnpj,
-    phone,
-    employee_range: employeeRange,
-  }), secret);
+  // Keep the exact pre-employee-range canonical payload when the optional
+  // field is absent so existing Idempotency-Key records remain reusable.
+  const payload = { email, cnpj, phone };
+  if (employeeRange !== undefined) payload.employee_range = employeeRange;
+  return hmacDigest(DOMAINS.registrationRequest, JSON.stringify(payload), secret);
 }
 
 export function webhookPayloadDigest(rawBody, secret) {
