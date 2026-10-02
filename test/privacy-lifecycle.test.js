@@ -47,6 +47,7 @@ test("production web runtime refuses missing or reused data digest secret before
     B2B_PII_ENCRYPTION_KEYS: JSON.stringify({
       "test-v1": Buffer.from("0123456789abcdef0123456789abcdef").toString("base64"),
     }),
+    B2B_RECEITAWS_TOKEN_MODE: "none",
   };
   assert.throws(() => buildWebRuntime({ env: base }), /B2B_DATA_DIGEST_SECRET/);
   assert.throws(() => buildWebRuntime({
@@ -55,6 +56,21 @@ test("production web runtime refuses missing or reused data digest secret before
   assert.throws(() => buildWebRuntime({
     env: { ...base, B2B_DATA_DIGEST_SECRET: "synthetic-data-digest-secret-minimum-32", B2B_DATA_DIGEST_VERSION: "legacy" },
   }), /data_digest_version_invalid/);
+});
+
+test("ReceitaWS commercial freshness and timeout have dedicated validated configuration", () => {
+  const defaults = loadConfig({});
+  assert.equal(defaults.registryBaseUrl, "https://receitaws.com.br/v1");
+  assert.equal(defaults.registryMaxAgeDays, 7);
+  assert.equal(defaults.registryTimeoutMs, 60_000);
+  assert.equal(defaults.requestTimeoutMs, 8000);
+  assert.equal(loadConfig({ B2B_RECEITAWS_MAX_AGE_DAYS: "0" }).registryMaxAgeDays, 0);
+  assert.equal(loadConfig({ B2B_RECEITAWS_MAX_AGE_DAYS: "30" }).registryMaxAgeDays, 30);
+  assert.equal(loadConfig({ B2B_RECEITAWS_TIMEOUT_MS: "50000" }).registryTimeoutMs, 50_000);
+  assert.throws(() => loadConfig({ B2B_RECEITAWS_MAX_AGE_DAYS: "-1" }), /B2B_RECEITAWS_MAX_AGE_DAYS_invalid/);
+  assert.throws(() => loadConfig({ B2B_RECEITAWS_MAX_AGE_DAYS: "1.5" }), /B2B_RECEITAWS_MAX_AGE_DAYS_invalid/);
+  assert.throws(() => loadConfig({ B2B_RECEITAWS_TIMEOUT_MS: "999" }), /B2B_RECEITAWS_TIMEOUT_MS_invalid/);
+  assert.throws(() => loadConfig({ B2B_RECEITAWS_TIMEOUT_MS: "120001" }), /B2B_RECEITAWS_TIMEOUT_MS_invalid/);
 });
 
 test("registration token clock tolerance is small and validated", () => {

@@ -5,47 +5,137 @@ import request from "supertest";
 import { ReceitaWsClient } from "../src/clients/receita-ws.js";
 import { ShopifyGraphqlClient } from "../src/clients/shopify-graphql.js";
 import { DATA_DIGEST_VERSION, webhookPayloadDigest } from "../src/data-digests.js";
+import { ExternalServiceError } from "../src/errors.js";
 import { defaultPayload, makeTestContext, newKey } from "./helpers.js";
 
 const abortingFetch = async (_url, options) => new Promise((_resolve, reject) => {
   options.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
 });
 
+const validRegistryResponse = (overrides = {}) => ({
+  status: "OK",
+  cnpj: defaultPayload().cnpj,
+  nome: "Synthetic Test",
+  situacao: "ATIVA",
+  ...overrides,
+});
+
+test("ReceitaWS commercial mode uses days, no-cache fallback and bearer header without token in URL", async () => {
+  let observed;
+  const token = "synthetic-bearer-token";
+  const client = new ReceitaWsClient({
+    fetchImpl: async (url, options) => {
+      observed = { url, authorization: options.headers.Authorization };
+      return { ok: true, status: 200, async json() { return validRegistryResponse(); } };
+    },
+    baseUrl: "https://registry.example.invalid/v1/",
+    token,
+    tokenMode: "bearer",
+    maxAgeDays: 7,
+    timeoutMs: 60_000,
+  });
+  const result = await client.checkCnpj(defaultPayload().cnpj);
+  assert.equal(observed.url, `https://registry.example.invalid/v1/cnpj/${defaultPayload().cnpj}/days/7?fallback=noCache`);
+  assert.equal(observed.authorization, `Bearer ${token}`);
+  assert.equal(observed.url.includes(token), false);
+  assert.deepEqual({ found: result.found, active: result.active, status: result.status }, {
+    found: true, active: true, status: "ATIVA",
+  });
+});
+
+test("ReceitaWS explicit tokenless mode preserves the public route", async () => {
+  let observed;
+  const client = new ReceitaWsClient({
+    fetchImpl: async (url, options) => {
+      observed = { url, headers: options.headers };
+      return { ok: true, status: 200, async json() { return validRegistryResponse(); } };
+    },
+    baseUrl: "https://registry.example.invalid/v1",
+    tokenMode: "none",
+    timeoutMs: 50,
+  });
+  await client.checkCnpj(defaultPayload().cnpj);
+  assert.equal(observed.url, `https://registry.example.invalid/v1/cnpj/${defaultPayload().cnpj}`);
+  assert.equal(observed.headers.Authorization, undefined);
+});
+
 test("ReceitaWS classifies INATIVA as inactive", async () => {
   const client = new ReceitaWsClient({
-    fetchImpl: async () => ({ ok: true, async json() { return { nome: "Synthetic Test", situacao_cadastral: "INATIVA" }; } }),
-    baseUrl: "https://registry.example.invalid", timeoutMs: 50,
+    fetchImpl: async () => ({ ok: true, status: 200, async json() { return validRegistryResponse({ situacao: "INATIVA" }); } }),
+    baseUrl: "https://registry.example.invalid", tokenMode: "none", timeoutMs: 50,
   });
   const result = await client.checkCnpj(defaultPayload().cnpj);
   assert.equal(result.found, true);
   assert.equal(result.active, false);
+  assert.equal(result.status, "INATIVA");
 });
 
 test("ReceitaWS timeout is sanitized as registry_unavailable", async () => {
-  const client = new ReceitaWsClient({ fetchImpl: abortingFetch, baseUrl: "https://registry.example.invalid", timeoutMs: 5 });
+  const client = new ReceitaWsClient({
+    fetchImpl: abortingFetch, baseUrl: "https://registry.example.invalid", tokenMode: "none", timeoutMs: 5,
+  });
   await assert.rejects(client.checkCnpj(defaultPayload().cnpj), (error) => error.code === "registry_unavailable" && error.status === 503);
 });
 
-test("ReceitaWS accepts only bearer authentication or explicit tokenless mode", async () => {
+test("ReceitaWS rejects error, incomplete, mismatched and invalid JSON responses", async () => {
+  const responses = [
+    { async json() { return { status: "ERROR", message: "synthetic" }; } },
+    { async json() { return { status: "OK", cnpj: defaultPayload().cnpj }; } },
+    { async json() { return validRegistryResponse({ cnpj: "11222333000181" }); } },
+    { async json() { throw new SyntaxError("synthetic invalid JSON"); } },
+  ];
+  for (const response of responses) {
+    const client = new ReceitaWsClient({
+      fetchImpl: async () => ({ ok: true, status: 200, ...response }),
+      baseUrl: "https://registry.example.invalid", tokenMode: "none", timeoutMs: 50,
+    });
+    await assert.rejects(client.checkCnpj(defaultPayload().cnpj), (error) => (
+      error.code === "registry_unavailable" && error.status === 503
+    ));
+  }
+});
+
+test("ReceitaWS sanitizes upstream HTTP failures without exposing token or body", async () => {
+  const token = "synthetic-private-registry-token";
+  for (const status of [402, 429, 500, 502, 503, 504]) {
+    const client = new ReceitaWsClient({
+      fetchImpl: async () => ({
+        ok: false,
+        status,
+        async json() { return { message: token }; },
+      }),
+      baseUrl: "https://registry.example.invalid/v1",
+      token,
+      tokenMode: "bearer",
+      maxAgeDays: 7,
+      timeoutMs: 50,
+    });
+    await assert.rejects(client.checkCnpj(defaultPayload().cnpj), (error) => {
+      assert.equal(error.code, "registry_unavailable");
+      assert.equal(error.status, 503);
+      assert.equal(error.upstreamStatus, status);
+      assert.equal(JSON.stringify(error).includes(token), false);
+      return true;
+    });
+  }
+});
+
+test("ReceitaWS accepts only authenticated commercial or explicit tokenless mode", async () => {
   assert.throws(() => new ReceitaWsClient({
     fetchImpl: async () => {}, baseUrl: "https://registry.example.invalid", token: "synthetic", tokenMode: "query",
   }), /registry_token_mode_invalid/);
   assert.throws(() => new ReceitaWsClient({
     fetchImpl: async () => {}, baseUrl: "https://registry.example.invalid", token: "synthetic", tokenMode: "none",
   }), /registry_token_forbidden_in_none_mode/);
-  let observed;
-  const bearer = new ReceitaWsClient({
-    fetchImpl: async (url, options) => {
-      observed = { url, authorization: options.headers.Authorization };
-      return { ok: true, async json() { return { nome: "Synthetic", situacao: "ATIVA" }; } };
-    },
-    baseUrl: "https://registry.example.invalid",
-    token: "synthetic-bearer-token",
-    tokenMode: "bearer",
-  });
-  await bearer.checkCnpj(defaultPayload().cnpj);
-  assert.equal(observed.url.includes("token="), false);
-  assert.equal(observed.authorization, "Bearer synthetic-bearer-token");
+  assert.throws(() => new ReceitaWsClient({
+    fetchImpl: async () => {}, baseUrl: "https://registry.example.invalid", tokenMode: "bearer",
+  }), /registry_token_required_in_bearer_mode/);
+  assert.throws(() => new ReceitaWsClient({
+    fetchImpl: async () => {}, baseUrl: "https://registry.example.invalid/v1?token=forbidden", tokenMode: "none",
+  }), /registry_base_url_invalid/);
+  assert.throws(() => new ReceitaWsClient({
+    fetchImpl: async () => {}, baseUrl: "https://registry.example.invalid", tokenMode: "none", maxAgeDays: -1,
+  }), /registry_max_age_days_invalid/);
 });
 
 test("Shopify timeout is sanitized as shopify_unavailable", async () => {
@@ -156,6 +246,26 @@ test("structured logs contain no PII, query strings, secret or metafield values"
   assert.equal(output.includes(secret), false);
   assert.equal(output.includes("sensitive-value"), false);
   assert.equal(output.includes("?secret="), false);
+});
+
+test("registry failures expose neither provider body nor token in logs or responses", async () => {
+  const secret = "synthetic-registry-secret-never-log";
+  const ctx = makeTestContext({
+    registryClient: {
+      async checkCnpj() {
+        throw new ExternalServiceError("registry", "registry_unavailable", {
+          cause: new Error(`provider body containing ${secret}`),
+          upstreamStatus: 402,
+        });
+      },
+    },
+  });
+  const response = await request(ctx.app).post("/v1/registrations")
+    .set("Idempotency-Key", newKey()).send(defaultPayload());
+  assert.equal(response.status, 503);
+  assert.equal(response.body.error.code, "registry_unavailable");
+  assert.equal(JSON.stringify(response.body).includes(secret), false);
+  assert.equal(ctx.lines.join("\n").includes(secret), false);
 });
 
 test("invalid webhook HMAC is rejected", async () => {

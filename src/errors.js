@@ -12,6 +12,10 @@ export class ExternalServiceError extends AppError {
     super(code, 503, options);
     this.name = "ExternalServiceError";
     this.service = service;
+    this.upstreamStatus = Number.isInteger(options.upstreamStatus)
+      && options.upstreamStatus >= 100 && options.upstreamStatus <= 599
+      ? options.upstreamStatus
+      : null;
   }
 }
 

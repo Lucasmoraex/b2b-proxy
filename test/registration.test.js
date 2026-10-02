@@ -136,6 +136,52 @@ test("returns registry_unavailable and does not reserve", async () => {
   assert.equal(ctx.store.registrations.size, 0);
 });
 
+test("incomplete registry response is unavailable and is never cached", async () => {
+  let calls = 0;
+  const registryClient = {
+    async checkCnpj() {
+      calls += 1;
+      return { found: false, active: false, status: "UNKNOWN" };
+    },
+  };
+  const ctx = makeTestContext({ registryClient });
+  const first = await postRegistration(ctx);
+  const second = await postRegistration(ctx, defaultPayload(), newKey());
+  assert.equal(first.status, 503);
+  assert.equal(first.body.error.code, "registry_unavailable");
+  assert.equal(second.status, 503);
+  assert.equal(calls, 2);
+  assert.equal(ctx.store.fiscalCache.size, 0);
+  assert.equal(ctx.store.registrations.size, 0);
+});
+
+test("legacy false-negative fiscal cache is ignored and replaced after a valid lookup", async () => {
+  let calls = 0;
+  const registryClient = {
+    async checkCnpj() {
+      calls += 1;
+      return { found: true, active: true, status: "ATIVA" };
+    },
+  };
+  const ctx = makeTestContext({ registryClient });
+  const cnpj = makeCnpj("313456789012");
+  await ctx.store.setFiscalCache({
+    cnpj,
+    found: false,
+    active: false,
+    status: "UNKNOWN",
+    checkedAt: ctx.clock(),
+    expiresAt: new Date(ctx.clock().getTime() + 60_000),
+  });
+  const response = await postRegistration(ctx, defaultPayload({ cnpj }));
+  assert.equal(response.status, 201);
+  assert.equal(calls, 1);
+  const cached = await ctx.store.getFiscalCache(cnpj, ctx.clock());
+  assert.deepEqual({ found: cached.found, active: cached.active, status: cached.status }, {
+    found: true, active: true, status: "ATIVA",
+  });
+});
+
 test("prechecks email, CNPJ and phone uniqueness without another registry call", async () => {
   const ctx = makeTestContext();
   const first = defaultPayload();

@@ -250,6 +250,18 @@ test("PostgreSQL migrations, indexed precheck, cache and concurrent uniqueness",
     assert.equal((await store.getFiscalCache(winner.cnpj_normalized, now)).status, "ATIVA");
     assert.equal(await store.getFiscalCache(winner.cnpj_normalized, new Date(now.getTime() + 60_000)), null);
 
+    const legacyFalseNegativeCnpj = makeCnpj("133456789012");
+    await store.setFiscalCache({
+      cnpj: legacyFalseNegativeCnpj, found: false, active: false, status: "UNKNOWN",
+      checkedAt: now, expiresAt: new Date(now.getTime() + 60_000),
+    });
+    assert.equal(await store.getFiscalCache(legacyFalseNegativeCnpj, now), null);
+    await store.setFiscalCache({
+      cnpj: legacyFalseNegativeCnpj, found: true, active: false, status: "INATIVA",
+      checkedAt: now, expiresAt: new Date(now.getTime() + 60_000),
+    });
+    assert.equal((await store.getFiscalCache(legacyFalseNegativeCnpj, now)).status, "INATIVA");
+
     const webhookEventId = crypto.randomUUID();
     await store.associateWebhook({
       eventId: webhookEventId,

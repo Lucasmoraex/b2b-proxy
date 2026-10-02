@@ -82,6 +82,8 @@ Configuração adicional:
 - `B2B_RECEITAWS_BASE`
 - `B2B_RECEITAWS_TOKEN`
 - `B2B_RECEITAWS_TOKEN_MODE`
+- `B2B_RECEITAWS_MAX_AGE_DAYS` (padrão `7`; inteiro não negativo)
+- `B2B_RECEITAWS_TIMEOUT_MS` (padrão `60000`; exclusivo da consulta fiscal)
 - `B2B_REGISTRATION_TOKEN_CLOCK_TOLERANCE_MS` (padrão `1000`, máximo `5000`; expiração antecipada/fail-closed)
 - `B2B_DATA_DIGEST_VERSION` (somente `hmac-sha256-v1`)
 - `B2B_AUTO_APPROVE`
@@ -148,6 +150,10 @@ Body permitido — campos adicionais, inclusive `password`, são rejeitados:
 Durante o rollout, `employee_range` é opcional por padrão. Quando enviado, aceita somente `1-9`, `10-29`, `30-49`, `50-99`, `100-249` ou `250+`; valor inválido retorna `422 invalid_employee_range`. Com `B2B_REQUIRE_EMPLOYEE_RANGE=true`, a ausência também retorna esse erro. O endpoint normaliza o e-mail, valida o CNPJ, normaliza telefone brasileiro para E.164, valida a faixa quando presente, consulta a situação fiscal e cria na mesma transação a reservation, três blind indexes e o payload operacional criptografado. A faixa presente participa do digest de idempotência, mas não cria claim, unicidade ou rate limit por identidade. Quando ausente, o JSON canônico do digest permanece byte a byte igual ao contrato anterior. O endpoint não pesquisa nem altera Customer Shopify. E-mail, CNPJ, telefone e faixa de novas reservations não são gravados em texto puro na linha de `registrations`.
 
 A ordem é: idempotência, admissão/quota compartilhada, conflitos em reservas atuais, conflito opcional no snapshot histórico ativo, cache/consulta fiscal e reserva `SERIALIZABLE`. Claims históricos únicos ou duplicados usam os mesmos códigos públicos de conflito e impedem a chamada fiscal. Se o lookup histórico estiver habilitado sem um `active_import_run_id` concluído, o cadastro falha fechado com `503 identity_index_unavailable`; runs `staging` ou `failed` nunca participam do lookup.
+
+No perfil comercial da ReceitaWS, `B2B_RECEITAWS_TOKEN_MODE=bearer` exige token e usa `GET /cnpj/{cnpj}/days/{days}?fallback=noCache`, sempre com o token exclusivamente em `Authorization: Bearer`. O modo explicitamente público `none` exige token vazio e usa `GET /cnpj/{cnpj}`. Não existe fallback silencioso do comercial para o público. Apenas resposta `status=OK`, CNPJ correspondente e situação cadastral explícita é considerada válida; `status=ERROR`, resposta incompleta, HTTP não-2xx, timeout ou JSON inválido retornam `503 registry_unavailable` e não entram no cache. `422 inactive_cnpj` fica reservado a empresa localizada com situação explícita diferente de `ATIVA`.
+
+O cache fiscal ignora linhas antigas com `found=false`, `status=UNKNOWN`, situação vazia ou combinação incoerente entre `active` e `status`. Essas linhas tornam-se cache miss e são substituídas somente depois de uma resposta empresarial válida.
 
 Sucesso `201`:
 

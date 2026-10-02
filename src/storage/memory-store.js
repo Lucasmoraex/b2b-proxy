@@ -488,6 +488,9 @@ export class MemoryRegistrationStore {
   async getFiscalCache(cnpj, now) {
     const cached = this.fiscalCache.get(cnpj);
     if (!cached || new Date(cached.expires_at) <= now) return null;
+    const status = typeof cached.status === "string" ? cached.status.trim().toUpperCase() : "";
+    if (cached.found !== true || !status || status === "UNKNOWN"
+      || cached.active !== (status === "ATIVA")) return null;
     return this.clone(cached);
   }
 

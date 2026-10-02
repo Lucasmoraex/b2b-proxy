@@ -126,6 +126,7 @@ Use valores aleatórios diferentes dos de produção. Nunca cole valores no Git,
 | `SHOPIFY_CLIENT_ID` | ausente/vazio |
 | `SHOPIFY_CLIENT_SECRET` | ausente/vazio |
 | `B2B_RECEITAWS_TOKEN` | ausente/vazio |
+| `B2B_RECEITAWS_TOKEN_MODE` | `none` |
 
 `B2B_RECEITAWS_BASE` pode ficar ausente: o simulador não realiza fetch.
 
@@ -136,9 +137,11 @@ Use valores aleatórios diferentes dos de produção. Nunca cole valores no Git,
 | `NODE_ENV` | `production` |
 | `B2B_SIMULATION_MODE` | `false` |
 | `SHOPIFY_SHOP` | domínio exato `nome-da-development-store.myshopify.com` |
-| `B2B_RECEITAWS_BASE` | endpoint fiscal contratado |
-| `B2B_RECEITAWS_TOKEN` | token de staging, se exigido pelo provedor |
-| `B2B_RECEITAWS_TOKEN_MODE` | `bearer`; use `none` somente com `B2B_RECEITAWS_TOKEN` vazio |
+| `B2B_RECEITAWS_BASE` | `https://receitaws.com.br/v1` para a API comercial oficial |
+| `B2B_RECEITAWS_TOKEN` | token comercial configurado diretamente no ambiente, nunca no Git |
+| `B2B_RECEITAWS_TOKEN_MODE` | `bearer`; use `none` somente para a rota pública e com token vazio |
+| `B2B_RECEITAWS_MAX_AGE_DAYS` | `7`; inteiro não negativo usado em `/days/{days}` |
+| `B2B_RECEITAWS_TIMEOUT_MS` | `60000`; separado do timeout Shopify |
 
 Não configure `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_ID` nem `SHOPIFY_ADMIN_TOKEN` no Web. `SHOPIFY_WEBHOOK_SECRET` é suficiente para verificar entregas.
 
@@ -169,6 +172,7 @@ Não configure `SHOPIFY_CLIENT_SECRET`, `SHOPIFY_CLIENT_ID` nem `SHOPIFY_ADMIN_T
 | `SHOPIFY_CLIENT_ID` | ausente/vazio |
 | `SHOPIFY_CLIENT_SECRET` | ausente/vazio |
 | `B2B_RECEITAWS_TOKEN` | ausente/vazio |
+| `B2B_RECEITAWS_TOKEN_MODE` | `none` |
 
 ### Worker — perfil real limitado à development store
 

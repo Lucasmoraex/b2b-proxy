@@ -513,7 +513,11 @@ export class PostgresRegistrationStore {
 
   async getFiscalCache(cnpj, now) {
     const result = await this.pool.query(`SELECT * FROM fiscal_registry_cache
-      WHERE cnpj_normalized=$1 AND expires_at>$2`, [cnpj, now]);
+      WHERE cnpj_normalized=$1 AND expires_at>$2
+        AND found IS TRUE
+        AND btrim(status) <> ''
+        AND upper(btrim(status)) <> 'UNKNOWN'
+        AND active = (upper(btrim(status)) = 'ATIVA')`, [cnpj, now]);
     return mapRow(result.rows[0]);
   }
 

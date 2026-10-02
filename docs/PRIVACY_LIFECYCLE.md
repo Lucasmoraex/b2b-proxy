@@ -40,7 +40,7 @@ Novas falhas da outbox e de imports históricos gravam somente `error_code`, `er
 
 `B2B_RECEITAWS_TOKEN_MODE` aceita somente:
 
-- `bearer`: token opcional enviado em `Authorization: Bearer`;
+- `bearer`: exige token, usa a rota comercial `/cnpj/{cnpj}/days/{days}?fallback=noCache` e envia a credencial exclusivamente em `Authorization: Bearer`;
 - `none`: exige `B2B_RECEITAWS_TOKEN` vazio.
 
-Token em query string é recusado durante a inicialização. O contrato fiscal de `found`, `active`, `status` e timeout permanece inalterado.
+`B2B_RECEITAWS_MAX_AGE_DAYS` controla a defasagem comercial e aceita inteiro não negativo; o padrão é `7`. `B2B_RECEITAWS_TIMEOUT_MS` é independente da Shopify e vale `60000` por padrão. Token, credenciais embutidas ou qualquer query na URL base são recusados durante a inicialização. Corpo de erro do provedor nunca é registrado ou devolvido. Apenas o status HTTP seguro pode ser preservado internamente.

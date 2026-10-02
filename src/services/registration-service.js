@@ -14,6 +14,13 @@ import { DATA_DIGEST_VERSION, registrationRequestDigest } from "../data-digests.
 import { buildRegistrationIdentityClaims } from "../registration-identities.js";
 import { encryptRegistrationOperationalPayload } from "../pii-crypto.js";
 
+function normalizeValidFiscalResult(result) {
+  if (!result || result.found !== true || typeof result.active !== "boolean") return null;
+  const status = typeof result.status === "string" ? result.status.trim().toUpperCase() : "";
+  if (!status || status === "UNKNOWN" || result.active !== (status === "ATIVA")) return null;
+  return { ...result, found: true, active: result.active, status };
+}
+
 export class RegistrationService {
   constructor({
     store,
@@ -143,12 +150,13 @@ export class RegistrationService {
     }
 
     let fiscal = this.fiscalCacheEnabled
-      ? await this.store.getFiscalCache(cnpj, now)
+      ? normalizeValidFiscalResult(await this.store.getFiscalCache(cnpj, now))
       : null;
 
     if (!fiscal) {
       try {
-        fiscal = await this.registryClient.checkCnpj(cnpj);
+        fiscal = normalizeValidFiscalResult(await this.registryClient.checkCnpj(cnpj));
+        if (!fiscal) throw new ExternalServiceError("registry", "registry_unavailable");
       } catch (error) {
         if (error instanceof ExternalServiceError) throw error;
         throw new ExternalServiceError("registry", "registry_unavailable", { cause: error });
@@ -166,7 +174,7 @@ export class RegistrationService {
         });
       }
     }
-    if (!fiscal.found || !fiscal.active || fiscal.status !== "ATIVA") throw new AppError("inactive_cnpj", 422);
+    if (!fiscal.active) throw new AppError("inactive_cnpj", 422);
 
     const expiresAt = new Date(now.getTime() + this.reservationTtlMs);
     const registrationId = this.idFactory();

@@ -26,7 +26,9 @@ export function buildWebRuntime({ env = process.env, fetchImpl = fetch, clock = 
   const config = loadConfig(env);
   assertSimulationSafety(config, { role: "web" });
   assertWebHttpSecurityConfig(config);
-  assertReceitaWsAuthConfig({ token: config.registryToken, tokenMode: config.registryTokenMode });
+  if (!config.simulationMode) {
+    assertReceitaWsAuthConfig({ token: config.registryToken, tokenMode: config.registryTokenMode });
+  }
   const missing = [];
   if (!config.shopifyWebhookSecret) missing.push("SHOPIFY_WEBHOOK_SECRET");
   if (!config.adminSecret) missing.push("B2B_ADMIN_SECRET");
@@ -81,7 +83,14 @@ export function buildWebRuntime({ env = process.env, fetchImpl = fetch, clock = 
 
   const registryClient = config.simulationMode
     ? new SimulatedRegistryClient({ scenario: config.simulatedRegistryScenario })
-    : new ReceitaWsClient({ fetchImpl, baseUrl: config.registryBaseUrl, token: config.registryToken, tokenMode: config.registryTokenMode, timeoutMs: config.requestTimeoutMs });
+    : new ReceitaWsClient({
+      fetchImpl,
+      baseUrl: config.registryBaseUrl,
+      token: config.registryToken,
+      tokenMode: config.registryTokenMode,
+      maxAgeDays: config.registryMaxAgeDays,
+      timeoutMs: config.registryTimeoutMs,
+    });
   const simulationController = config.simulationMode ? {
     getRegistryScenario: () => registryClient.getScenario(),
     setRegistryScenario: (scenario) => registryClient.setScenario(scenario),
