@@ -84,3 +84,20 @@ export const defaultPayload = (overrides = {}) => ({
   employee_range: "10-29",
   ...overrides,
 });
+
+export const defaultAttribution = () => ({
+  first_touch: {
+    utm_source: "google",
+    utm_medium: "cpc",
+    utm_campaign: "cadeiras-b2b",
+    captured_at: "2029-12-20T10:00:00.000Z",
+    landing_page: "/?utm_source=google&utm_medium=cpc&utm_campaign=cadeiras-b2b",
+  },
+  last_touch: {
+    utm_source: "linkedin",
+    utm_medium: "paid_social",
+    utm_campaign: "remarketing-b2b",
+    captured_at: "2029-12-31T18:30:00.000Z",
+    landing_page: "/collections/cadeiras?utm_source=linkedin",
+  },
+});

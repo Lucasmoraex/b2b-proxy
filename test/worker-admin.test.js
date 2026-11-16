@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import request from "supertest";
 import { OutboxWorker } from "../src/worker.js";
-import { defaultPayload, makeTestContext, newKey } from "./helpers.js";
+import { defaultAttribution, defaultPayload, makeTestContext, newKey } from "./helpers.js";
 import { buildRegistrationIdentityClaims } from "../src/registration-identities.js";
 import { encryptRegistrationOperationalPayload } from "../src/pii-crypto.js";
 
@@ -20,7 +20,9 @@ function shopifyMock(overrides = {}) {
 }
 
 async function boundRegistration(ctx, customerId = "synthetic-customer-1") {
-  const response = await request(ctx.app).post("/v1/registrations").set("Idempotency-Key", newKey()).send(defaultPayload());
+  const response = await request(ctx.app).post("/v1/registrations").set("Idempotency-Key", newKey()).send(defaultPayload({
+    attribution: defaultAttribution(),
+  }));
   const registration = await ctx.store.getRegistration(response.body.registration_id);
   const [emailClaim] = buildRegistrationIdentityClaims({
     ...defaultPayload(), secret: ctx.config.dataDigestSecret,
@@ -49,6 +51,14 @@ test("worker synchronizes by customer_id and keeps account pending review", asyn
     && call[2].some((field) => field.key === "employee_range"
       && field.value === defaultPayload().employee_range
       && field.type === "single_line_text_field")));
+  assert.ok(shopify.calls.some((call) => call[0] === "metafields"
+    && call[2].some((field) => field.key === "utm_first_touch"
+      && field.type === "json"
+      && JSON.parse(field.value).utm_source === "google")));
+  assert.ok(shopify.calls.some((call) => call[0] === "metafields"
+    && call[2].some((field) => field.key === "utm_last_touch"
+      && field.type === "json"
+      && JSON.parse(field.value).utm_source === "linkedin")));
   assert.equal(shopify.calls.some((call) => call[0] === "addTags" && call[2].includes("b2b-approved")), false);
 });
 

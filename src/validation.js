@@ -3,6 +3,17 @@ import { AppError } from "./errors.js";
 const MAX_EMAIL = 254;
 const MAX_CNPJ_INPUT = 32;
 const MAX_PHONE_INPUT = 32;
+const MAX_ATTRIBUTION_VALUE = 512;
+const MAX_LANDING_PAGE = 2048;
+const ATTRIBUTION_KEYS = Object.freeze([
+  "src",
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+]);
+const ATTRIBUTION_TOUCH_KEYS = new Set([...ATTRIBUTION_KEYS, "captured_at", "landing_page"]);
 export const EMPLOYEE_RANGES = Object.freeze([
   "1-9",
   "10-29",
@@ -62,6 +73,50 @@ export function normalizeEmployeeRange(value) {
     throw new AppError("invalid_employee_range", 422);
   }
   return value;
+}
+
+function normalizeAttributionTouch(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new AppError("invalid_attribution", 422);
+  if (Object.keys(value).some((key) => !ATTRIBUTION_TOUCH_KEYS.has(key))) {
+    throw new AppError("invalid_attribution", 422);
+  }
+  const result = {};
+  for (const key of ATTRIBUTION_KEYS) {
+    if (value[key] === undefined || value[key] === null) continue;
+    if (typeof value[key] !== "string") throw new AppError("invalid_attribution", 422);
+    const normalized = value[key].trim();
+    if (!normalized || normalized.length > MAX_ATTRIBUTION_VALUE) throw new AppError("invalid_attribution", 422);
+    result[key] = normalized;
+  }
+  if (!Object.keys(result).length) throw new AppError("invalid_attribution", 422);
+  if (value.captured_at !== undefined && value.captured_at !== null) {
+    if (typeof value.captured_at !== "string" || value.captured_at.length > 64) {
+      throw new AppError("invalid_attribution", 422);
+    }
+    const capturedAt = new Date(value.captured_at);
+    if (Number.isNaN(capturedAt.getTime())) throw new AppError("invalid_attribution", 422);
+    result.captured_at = capturedAt.toISOString();
+  }
+  if (value.landing_page !== undefined && value.landing_page !== null) {
+    if (typeof value.landing_page !== "string" || value.landing_page.length > MAX_LANDING_PAGE
+      || !value.landing_page.startsWith("/") || value.landing_page.startsWith("//")) {
+      throw new AppError("invalid_attribution", 422);
+    }
+    result.landing_page = value.landing_page;
+  }
+  return result;
+}
+
+export function normalizeAttribution(value) {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new AppError("invalid_attribution", 422);
+  const allowed = new Set(["first_touch", "last_touch"]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) throw new AppError("invalid_attribution", 422);
+  const firstTouch = normalizeAttributionTouch(value.first_touch);
+  const lastTouch = normalizeAttributionTouch(value.last_touch);
+  if (!firstTouch && !lastTouch) throw new AppError("invalid_attribution", 422);
+  return { first_touch: firstTouch, last_touch: lastTouch };
 }
 
 export function validateUuid(value, errorCode = "invalid_idempotency_key") {

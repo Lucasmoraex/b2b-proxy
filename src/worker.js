@@ -1,9 +1,17 @@
 import crypto from "node:crypto";
 import { persistedErrorRecord } from "./security.js";
 import { decryptRegistrationOperationalPayload } from "./pii-crypto.js";
-import { normalizeEmployeeRange } from "./validation.js";
+import { normalizeAttribution, normalizeEmployeeRange } from "./validation.js";
 
 const metafield = (key, value, type = "single_line_text_field") => ({ key, value: String(value), type });
+
+function attributionMetafields(attribution) {
+  if (!attribution) return [];
+  const fields = [];
+  if (attribution.first_touch) fields.push(metafield("utm_first_touch", JSON.stringify(attribution.first_touch), "json"));
+  if (attribution.last_touch) fields.push(metafield("utm_last_touch", JSON.stringify(attribution.last_touch), "json"));
+  return fields;
+}
 
 export class OutboxWorker {
   constructor({
@@ -70,6 +78,9 @@ export class OutboxWorker {
         const employeeRange = payload.employee_range === undefined
           ? null
           : normalizeEmployeeRange(payload.employee_range);
+        const attribution = payload.attribution === undefined
+          ? null
+          : normalizeAttribution(payload.attribution);
         if (registration.employee_range_required && !employeeRange) throw new Error("employee range unavailable");
         return {
           ...registration,
@@ -77,6 +88,7 @@ export class OutboxWorker {
           cnpj_normalized: payload.cnpj,
           phone_e164: payload.phone,
           employee_range: employeeRange,
+          attribution,
         };
       } catch (error) {
         throw Object.assign(new Error("operational payload unavailable"), {
@@ -101,6 +113,7 @@ export class OutboxWorker {
       metafield("cnpj_checked_at", new Date(registration.fiscal_validated_at).toISOString(), "date_time"),
     ];
     if (registration.employee_range) fields.push(metafield("employee_range", registration.employee_range));
+    fields.push(...attributionMetafields(registration.attribution));
     await this.shopify.setMetafields(registration.shopify_customer_id, fields);
     await this.shopify.removeTags(registration.shopify_customer_id, ["b2b-approved"]);
     await this.shopify.addTags(registration.shopify_customer_id, ["b2b-pending"]);
@@ -134,6 +147,7 @@ export class OutboxWorker {
     if (registration.status === "approved") {
       const fields = [metafield("cnpj", registration.cnpj_normalized), metafield("cnpj_status", "approved")];
       if (registration.employee_range) fields.push(metafield("employee_range", registration.employee_range));
+      fields.push(...attributionMetafields(registration.attribution));
       await this.shopify.setMetafields(registration.shopify_customer_id, fields);
       await this.shopify.updatePhone(registration.shopify_customer_id, registration.phone_e164);
       await this.shopify.addTags(registration.shopify_customer_id, ["b2b-approved"]);

@@ -6,6 +6,7 @@ import {
   normalizeCnpj,
   normalizeEmail,
   normalizeEmployeeRange,
+  normalizeAttribution,
   validateUuid,
 } from "../validation.js";
 import { identityIndexSecretFingerprint, registrationIdentityClaims } from "../identity/historical-identities.js";
@@ -85,7 +86,7 @@ export class RegistrationService {
 
   async create(body, idempotencyHeader, { ipHash } = {}) {
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new AppError("invalid_request", 422);
-    const allowed = new Set(["email", "cnpj", "phone", "employee_range"]);
+    const allowed = new Set(["email", "cnpj", "phone", "employee_range", "attribution"]);
     if (Object.keys(body).some((key) => !allowed.has(key))) throw new AppError("invalid_request", 422);
     const idempotencyKey = validateUuid(idempotencyHeader);
     const email = normalizeEmail(body?.email);
@@ -94,6 +95,7 @@ export class RegistrationService {
     const employeeRange = body.employee_range === undefined
       ? undefined
       : normalizeEmployeeRange(body.employee_range);
+    const attribution = normalizeAttribution(body.attribution);
     if (this.requireEmployeeRange && employeeRange === undefined) {
       throw new AppError("invalid_employee_range", 422);
     }
@@ -180,6 +182,7 @@ export class RegistrationService {
     const registrationId = this.idFactory();
     const payload = { email, cnpj, phone };
     if (employeeRange !== undefined) payload.employee_range = employeeRange;
+    if (attribution !== undefined) payload.attribution = attribution;
     const operationalPayload = encryptRegistrationOperationalPayload({
       registrationId,
       payload,

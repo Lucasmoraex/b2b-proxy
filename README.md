@@ -4,7 +4,7 @@ Backend de reserva e sincronização do cadastro B2B da Elements Para Empresas. 
 
 ## Arquitetura
 
-1. O tema reserva e-mail, CNPJ, telefone e faixa de colaboradores em `POST /v1/registrations`.
+1. O tema reserva e-mail, CNPJ, telefone, faixa de colaboradores e atribuição de marketing em `POST /v1/registrations`.
 2. PostgreSQL garante unicidade atômica e idempotência.
    Quando habilitado, o índice HMAC de identidades históricas também bloqueia valores já associados a Customers existentes, sem guardar esses valores em texto puro.
    Novas reservas usam blind indexes HMAC para as três identidades e guardam o payload operacional, inclusive a faixa de colaboradores, criptografado com AES-256-GCM; as colunas legadas de PII permanecem `NULL`.
@@ -143,11 +143,29 @@ Body permitido — campos adicionais, inclusive `password`, são rejeitados:
   "email": "empresa@example.invalid",
   "cnpj": "CNPJ sintético válido",
   "phone": "+55NUMERO_SINTETICO",
-  "employee_range": "10-29"
+  "employee_range": "10-29",
+  "attribution": {
+    "first_touch": {
+      "utm_source": "google",
+      "utm_medium": "cpc",
+      "utm_campaign": "cadeiras-b2b",
+      "captured_at": "2030-01-01T10:00:00.000Z",
+      "landing_page": "/"
+    },
+    "last_touch": {
+      "utm_source": "linkedin",
+      "utm_medium": "paid_social",
+      "utm_campaign": "remarketing-b2b",
+      "captured_at": "2030-01-05T15:00:00.000Z",
+      "landing_page": "/collections/cadeiras"
+    }
+  }
 }
 ```
 
-Durante o rollout, `employee_range` é opcional por padrão. Quando enviado, aceita somente `1-9`, `10-29`, `30-49`, `50-99`, `100-249` ou `250+`; valor inválido retorna `422 invalid_employee_range`. Com `B2B_REQUIRE_EMPLOYEE_RANGE=true`, a ausência também retorna esse erro. O endpoint normaliza o e-mail, valida o CNPJ, normaliza telefone brasileiro para E.164, valida a faixa quando presente, consulta a situação fiscal e cria na mesma transação a reservation, três blind indexes e o payload operacional criptografado. A faixa presente participa do digest de idempotência, mas não cria claim, unicidade ou rate limit por identidade. Quando ausente, o JSON canônico do digest permanece byte a byte igual ao contrato anterior. O endpoint não pesquisa nem altera Customer Shopify. E-mail, CNPJ, telefone e faixa de novas reservations não são gravados em texto puro na linha de `registrations`.
+Durante o rollout, `employee_range` é opcional por padrão. Quando enviado, aceita somente `1-9`, `10-29`, `30-49`, `50-99`, `100-249` ou `250+`; valor inválido retorna `422 invalid_employee_range`. `attribution` também é opcional e aceita `first_touch` e `last_touch`, compostos pelos parâmetros `src`/`utm_*`, data de captura e caminho interno da landing page. O endpoint normaliza o e-mail, valida o CNPJ, normaliza telefone brasileiro para E.164, valida a faixa e a atribuição quando presentes, consulta a situação fiscal e cria na mesma transação a reservation, três blind indexes e o payload operacional criptografado. A faixa presente participa do digest de idempotência, mas atribuição não participa do digest e nenhum dos dois cria claim, unicidade ou rate limit por identidade. Quando ausentes, o JSON canônico do digest permanece byte a byte igual ao contrato anterior. O endpoint não pesquisa nem altera Customer Shopify. E-mail, CNPJ, telefone, faixa e atribuição de novas reservations não são gravados em texto puro na linha de `registrations`.
+
+Antes do deploy, crie no Customer Shopify as definições JSON `custom.utm_first_touch` e `custom.utm_last_touch`. O worker grava os dois valores durante `sync_registration`; cadastros legados sem atribuição continuam sendo sincronizados sem esses metacampos.
 
 A ordem é: idempotência, admissão/quota compartilhada, conflitos em reservas atuais, conflito opcional no snapshot histórico ativo, cache/consulta fiscal e reserva `SERIALIZABLE`. Claims históricos únicos ou duplicados usam os mesmos códigos públicos de conflito e impedem a chamada fiscal. Se o lookup histórico estiver habilitado sem um `active_import_run_id` concluído, o cadastro falha fechado com `503 identity_index_unavailable`; runs `staging` ou `failed` nunca participam do lookup.
 

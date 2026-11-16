@@ -4,7 +4,7 @@ import { test } from "node:test";
 import request from "supertest";
 import { DATA_DIGEST_VERSION, registrationRequestDigest } from "../src/data-digests.js";
 import { ExternalServiceError } from "../src/errors.js";
-import { defaultPayload, makeCnpj, makeTestContext, maskCnpj, newKey } from "./helpers.js";
+import { defaultAttribution, defaultPayload, makeCnpj, makeTestContext, maskCnpj, newKey } from "./helpers.js";
 import { decryptRegistrationOperationalPayload } from "../src/pii-crypto.js";
 import { EMPLOYEE_RANGES } from "../src/validation.js";
 
@@ -90,6 +90,19 @@ test("accepts a masked valid CNPJ without truncation", async () => {
   }).cnpj, cnpj);
 });
 
+test("accepts and encrypts first-touch and last-touch attribution", async () => {
+  const ctx = makeTestContext();
+  const attribution = defaultAttribution();
+  const response = await postRegistration(ctx, defaultPayload({ attribution }));
+  assert.equal(response.status, 201);
+  const encrypted = await ctx.store.getOperationalPayload(response.body.registration_id);
+  const payload = decryptRegistrationOperationalPayload({
+    registrationId: response.body.registration_id, encrypted, keyring: ctx.piiKeyring,
+  });
+  assert.deepEqual(payload.attribution, attribution);
+  assert.equal(JSON.stringify(encrypted).includes("remarketing-b2b"), false);
+});
+
 for (const [name, payload, code] of [
   ["invalid CNPJ", defaultPayload({ cnpj: "00000000000000" }), "invalid_cnpj"],
   ["too many CNPJ digits", defaultPayload({ cnpj: `${makeCnpj()}9` }), "invalid_cnpj"],
@@ -98,6 +111,10 @@ for (const [name, payload, code] of [
   ["invalid email", defaultPayload({ email: "not-an-email" }), "invalid_email"],
   ["non-string employee range", defaultPayload({ employee_range: 10 }), "invalid_employee_range"],
   ["unsupported employee range", defaultPayload({ employee_range: "10-30" }), "invalid_employee_range"],
+  ["unknown attribution field", defaultPayload({ attribution: { first_touch: { utm_source: "google", unknown: "value" } } }), "invalid_attribution"],
+  ["empty attribution", defaultPayload({ attribution: { first_touch: {} } }), "invalid_attribution"],
+  ["oversized attribution", defaultPayload({ attribution: { last_touch: { utm_source: "x".repeat(513) } } }), "invalid_attribution"],
+  ["external landing page", defaultPayload({ attribution: { first_touch: { utm_source: "google", landing_page: "https://evil.invalid" } } }), "invalid_attribution"],
   ["password field", { ...defaultPayload(), password: "must-not-be-accepted" }, "invalid_request"],
 ]) test(`rejects ${name}`, async () => {
   const ctx = makeTestContext();
